@@ -36,7 +36,13 @@ app.use(helmet());
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || "http://localhost:5173")
   .split(",")
   .map((origin) => origin.trim());
-app.use(cors({ origin: allowedOrigins }));
+app.use(cors({
+  origin: [
+    "http://localhost:5173",
+    "https://hr-portal-system-48q3.vercel.app"
+  ],
+  credentials: true
+}));
 
 app.use(express.json());
 
