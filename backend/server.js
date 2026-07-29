@@ -28,6 +28,7 @@ const employeeRoutes = require("./routes/employees");
 const payrollRoutes = require("./routes/payroll");
 
 const app = express();
+app.set('trust proxy', 1);
 
 app.use(helmet());
 
