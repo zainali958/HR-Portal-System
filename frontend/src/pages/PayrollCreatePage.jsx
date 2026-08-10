@@ -47,7 +47,7 @@ export default function PayrollCreatePage() {
     setEntries((prev) => {
       const next = { ...prev };
       if (checked) {
-        next[empId] = { included: true, proposedAmount: "", attendanceSummary: "", tasksSummary: "", note: "" };
+        next[empId] = { included: true, proposedAmount: "", attendanceFile: null, tasksFile: null, note: "" };
       } else {
         delete next[empId];
       }
@@ -57,6 +57,29 @@ export default function PayrollCreatePage() {
 
   function updateEntry(empId, field, value) {
     setEntries((prev) => ({ ...prev, [empId]: { ...prev[empId], [field]: value } }));
+  }
+
+  const MAX_FILE_BYTES = 8 * 1024 * 1024; // keep comfortably under the 15mb JSON body limit once base64-encoded
+
+  function handleFileChange(empId, field, fileList) {
+    const file = fileList && fileList[0];
+    if (!file) {
+      updateEntry(empId, field, null);
+      return;
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      setSubmitError(`${file.name} is too large - please upload a file under 8MB`);
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      // reader.result is "data:<mimetype>;base64,<data>" - only the part
+      // after the comma is the actual base64 payload we store.
+      const base64 = reader.result.split(",")[1];
+      updateEntry(empId, field, { filename: file.name, mimetype: file.type || "application/octet-stream", data: base64 });
+    };
+    reader.onerror = () => setSubmitError(`Failed to read ${file.name}`);
+    reader.readAsDataURL(file);
   }
 
   async function handleSubmit(e) {
@@ -86,8 +109,8 @@ export default function PayrollCreatePage() {
         entries: included.map(([empId, v]) => ({
           employee: empId,
           proposedAmount: Number(v.proposedAmount),
-          attendanceSummary: v.attendanceSummary,
-          tasksSummary: v.tasksSummary,
+          attendanceFile: v.attendanceFile,
+          tasksFile: v.tasksFile,
           note: v.note,
         })),
       };
@@ -163,20 +186,30 @@ export default function PayrollCreatePage() {
                         />
                       </label>
                       <label>
-                        Attendance Summary <span className="optional">(optional)</span>
-                        <textarea
-                          rows={2}
-                          value={entry.attendanceSummary}
-                          onChange={(e) => updateEntry(emp._id, "attendanceSummary", e.target.value)}
+                        Attendance Sheet <span className="optional">(optional)</span>
+                        <input
+                          type="file"
+                          accept=".pdf,.jpg,.jpeg,.png,.csv,.xlsx,.xls"
+                          onChange={(e) => handleFileChange(emp._id, "attendanceFile", e.target.files)}
                         />
+                        {entry.attendanceFile && (
+                          <span className="muted" style={{ display: "block", marginTop: "0.3rem" }}>
+                            Selected: {entry.attendanceFile.filename}
+                          </span>
+                        )}
                       </label>
                       <label>
-                        Tasks Summary <span className="optional">(optional)</span>
-                        <textarea
-                          rows={2}
-                          value={entry.tasksSummary}
-                          onChange={(e) => updateEntry(emp._id, "tasksSummary", e.target.value)}
+                        Task Report <span className="optional">(optional)</span>
+                        <input
+                          type="file"
+                          accept=".pdf,.jpg,.jpeg,.png,.csv,.xlsx,.xls"
+                          onChange={(e) => handleFileChange(emp._id, "tasksFile", e.target.files)}
                         />
+                        {entry.tasksFile && (
+                          <span className="muted" style={{ display: "block", marginTop: "0.3rem" }}>
+                            Selected: {entry.tasksFile.filename}
+                          </span>
+                        )}
                       </label>
                       <label>
                         Note <span className="optional">(optional)</span>
