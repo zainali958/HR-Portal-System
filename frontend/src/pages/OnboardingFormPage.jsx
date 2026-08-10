@@ -2,13 +2,21 @@ import { useEffect, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { getOffer } from "../api/offers";
 import { createOnboarding } from "../api/onboarding";
+import { getCompanies } from "../api/companies";
+import { useAuth } from "../context/AuthContext";
 
 export default function OnboardingFormPage() {
   const [searchParams] = useSearchParams();
   const offerId = searchParams.get("offerId");
+  const isExistingEmployee = !offerId;
   const navigate = useNavigate();
+  const { user, isHR, isCEO } = useAuth();
+  const canPickCompany = isHR || isCEO; // Unit Managers are locked to their own company
 
   const [offer, setOffer] = useState(null);
+  const [companies, setCompanies] = useState([]);
+  const [companyId, setCompanyId] = useState("");
+  const [designation, setDesignation] = useState("");
   const [loadError, setLoadError] = useState("");
   const [submitError, setSubmitError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -38,26 +46,33 @@ export default function OnboardingFormPage() {
   });
 
   useEffect(() => {
-    if (!offerId) {
-      setLoadError("No offer selected - go to an approved offer and click 'Start Onboarding'.");
+    if (!isExistingEmployee) {
+      getOffer(offerId)
+        .then((data) => {
+          setOffer(data);
+          // An Offer's employmentType is only "Employee" or "Intern" - if it
+          // was an Intern offer, lock Onboarding's employmentType to Intern
+          // too. Otherwise default to Full-Time, but the Unit Manager can
+          // still pick Part-Time.
+          setForm((prev) => ({
+            ...prev,
+            employeeName: data.candidateName,
+            contactNumber: data.candidatePhone || "",
+            employmentType: data.employmentType === "Intern" ? "Intern" : "Full-Time",
+          }));
+        })
+        .catch(() => setLoadError("Could not load the linked offer."));
       return;
     }
-    getOffer(offerId)
-      .then((data) => {
-        setOffer(data);
-        // An Offer's employmentType is only "Employee" or "Intern" - if it
-        // was an Intern offer, lock Onboarding's employmentType to Intern
-        // too. Otherwise default to Full-Time, but the Unit Manager can
-        // still pick Part-Time.
-        setForm((prev) => ({
-          ...prev,
-          employeeName: data.candidateName,
-          contactNumber: data.candidatePhone || "",
-          employmentType: data.employmentType === "Intern" ? "Intern" : "Full-Time",
-        }));
-      })
-      .catch(() => setLoadError("Could not load the linked offer."));
-  }, [offerId]);
+
+    // Existing-employee path - HR/CEO need a company to pick from; a Unit
+    // Manager is locked to their own, so no need to fetch the full list.
+    if (canPickCompany) {
+      getCompanies()
+        .then(setCompanies)
+        .catch(() => setLoadError("Failed to load companies"));
+    }
+  }, [offerId, isExistingEmployee, canPickCompany]);
 
   function updateField(field, value) {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -92,11 +107,23 @@ export default function OnboardingFormPage() {
       setSubmitError("Basic Salary is required for Full-Time/Part-Time employees");
       return;
     }
+    if (isExistingEmployee) {
+      if (!designation.trim()) {
+        setSubmitError("Designation is required");
+        return;
+      }
+      if (canPickCompany && !companyId) {
+        setSubmitError("Company is required");
+        return;
+      }
+    }
 
     setSubmitting(true);
     try {
       const payload = {
-        offerId,
+        ...(isExistingEmployee
+          ? { designation: designation.trim(), ...(canPickCompany ? { companyId } : {}) }
+          : { offerId }),
         employeeName: form.employeeName,
         fatherName: form.fatherName,
         cnic: form.cnic,
@@ -141,14 +168,51 @@ export default function OnboardingFormPage() {
   return (
     <div className="page-content">
       <p className="eyebrow">Onboarding</p>
-      <h1>Onboard {offer ? offer.candidateName : "Candidate"}</h1>
-      {offer && (
-        <p className="muted">
-          {offer.company ? offer.company.name : ""} — {offer.designation}
-        </p>
+      {isExistingEmployee ? (
+        <>
+          <h1>Add Existing Employee</h1>
+          <p className="muted">
+            For staff who already work here but never went through the Offer pipeline in this system.
+          </p>
+        </>
+      ) : (
+        <>
+          <h1>Onboard {offer ? offer.candidateName : "Candidate"}</h1>
+          {offer && (
+            <p className="muted">
+              {offer.company ? offer.company.name : ""} — {offer.designation}
+            </p>
+          )}
+        </>
       )}
 
       <form onSubmit={handleSubmit} className="card">
+        {isExistingEmployee && (
+          <>
+            <h3>Role</h3>
+            {canPickCompany ? (
+              <label>
+                Company
+                <select value={companyId} onChange={(e) => setCompanyId(e.target.value)} required>
+                  <option value="">Select a company...</option>
+                  {companies.map((c) => (
+                    <option key={c._id} value={c._id}>{c.name}</option>
+                  ))}
+                </select>
+              </label>
+            ) : (
+              <label>
+                Company
+                <input value={user?.company || ""} disabled />
+              </label>
+            )}
+            <label>
+              Designation
+              <input value={designation} onChange={(e) => setDesignation(e.target.value)} placeholder="e.g. Senior Software Engineer" required />
+            </label>
+          </>
+        )}
+
         <h3>Personal Details</h3>
         <label>
           Full Name
