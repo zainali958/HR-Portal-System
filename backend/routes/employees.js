@@ -8,14 +8,20 @@ const { logAction } = require("../utils/auditLog");
 router.use(requireAuth);
 router.use(requireAnyRole(["Unit Manager", "HR", "CEO"]));
 
-// GET /api/employees - scoped the same way as Offers/Onboarding.
-// Note: unlike Offers, ANY Unit Manager in the company can view/edit these
-// (not just whoever originally submitted the offer) - an employee record
-// belongs to the company, not to one manager, per the brief's wording.
+// GET /api/employees
+// - HR / CEO (canViewAllCompanies): see every employee, across every
+//   company - unchanged.
+// - Unit Manager (Team Lead): scoped to their own company AND further
+//   restricted to only the employees THEY personally submitted/onboarded -
+//   no longer every employee in the company. This matches how Offers and
+//   Onboarding are already scoped to submittedBy.
 router.get("/", async (req, res) => {
   try {
     const filter = scopeFilter(req.user);
     if (req.query.status) filter.employmentStatus = req.query.status;
+    if (!req.user.role.canViewAllCompanies) {
+      filter.submittedBy = req.user._id;
+    }
 
     const employees = await Employee.find(filter).populate("company").sort({ createdAt: -1 });
     res.json(employees);
@@ -24,11 +30,20 @@ router.get("/", async (req, res) => {
   }
 });
 
+// Shared access check for single-record routes below - HR/CEO get full
+// access via canAccessCompany's canViewAllCompanies branch; a Unit Manager
+// additionally needs to be the one who submitted this specific employee.
+function canAccessEmployee(user, employee) {
+  if (!canAccessCompany(user, employee.company._id || employee.company)) return false;
+  if (user.role.canViewAllCompanies) return true;
+  return !!employee.submittedBy && employee.submittedBy.toString() === user._id.toString();
+}
+
 // GET /api/employees/:id
 router.get("/:id", async (req, res) => {
   try {
     const employee = await Employee.findById(req.params.id).populate("company");
-    if (!employee || !canAccessCompany(req.user, employee.company._id)) {
+    if (!employee || !canAccessEmployee(req.user, employee)) {
       return res.status(404).json({ message: "Employee not found" });
     }
     res.json(employee);
@@ -38,13 +53,12 @@ router.get("/:id", async (req, res) => {
 });
 
 // PATCH /api/employees/:id - Active/Inactive toggle, designation changes, etc.
-// Access: HR/COO/CEO (see everything) OR any Unit Manager in that employee's
-// own company - not restricted to the original submitter.
+// Access: HR/CEO (see everything) OR the Unit Manager who submitted this
+// specific employee - no longer any Unit Manager in the company.
 router.patch("/:id", async (req, res) => {
   try {
-    const employee = await Employee.findById(req.params.id);
-    if (!employee) return res.status(404).json({ message: "Employee not found" });
-    if (!canAccessCompany(req.user, employee.company)) {
+    const employee = await Employee.findById(req.params.id).populate("company");
+    if (!employee || !canAccessEmployee(req.user, employee)) {
       return res.status(404).json({ message: "Employee not found" });
     }
 
