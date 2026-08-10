@@ -13,9 +13,23 @@ const commentSchema = new mongoose.Schema(
 
 const onboardingSchema = new mongoose.Schema(
   {
-    offer: { type: mongoose.Schema.Types.ObjectId, ref: "Offer", required: true, unique: true },
+    // Optional now - only new hires coming through the Offer pipeline have
+    // one. Existing employees entered directly (never had an AmanorX
+    // Offer) leave this unset. sparse:true so multiple records can all
+    // have offer:undefined without violating the unique index.
+    offer: { type: mongoose.Schema.Types.ObjectId, ref: "Offer", unique: true, sparse: true },
+    // true for employees entered directly via "Add Existing Employee"
+    // (no linked Offer) rather than the normal new-hire pipeline.
+    isExistingEmployee: { type: Boolean, default: false },
     company: { type: mongoose.Schema.Types.ObjectId, ref: "Company", required: true },
     submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+
+    // Normally copied from the linked Offer at creation time; for an
+    // existing employee (no Offer) it's entered directly on this form
+    // instead. Either way, this field is now the single source of truth
+    // so downstream code (Employee creation, the letter generator) doesn't
+    // need to care which path the record came from.
+    designation: { type: String, trim: true, default: "" },
 
     // Snapshot of the company's legal employer name/status at the moment
     // this record was created - looked up automatically, never typed by
