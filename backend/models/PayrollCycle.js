@@ -15,11 +15,25 @@ const STATUS_OPTIONS = [
   "Needs HR Attention",
 ];
 
+// Attendance/Tasks used to be free-text boxes - replaced with an actual
+// uploaded file (attendance sheet / task report) per Shafaat's request, so
+// the field holds real evidence instead of a typed summary. Stored inline
+// as base64 (no S3/cloud storage wired up in this project yet) - fine for
+// the small PDFs/images/spreadsheets this is meant for.
+const fileSchema = new mongoose.Schema(
+  {
+    filename: { type: String, trim: true, required: true },
+    mimetype: { type: String, trim: true, required: true },
+    data: { type: String, required: true }, // base64-encoded file content
+  },
+  { _id: false }
+);
+
 const entrySchema = new mongoose.Schema(
   {
     employee: { type: mongoose.Schema.Types.ObjectId, ref: "Employee", required: true },
-    attendanceSummary: { type: String, trim: true, default: "" },
-    tasksSummary: { type: String, trim: true, default: "" },
+    attendanceFile: { type: fileSchema, default: null },
+    tasksFile: { type: fileSchema, default: null },
     proposedAmount: { type: Number, min: 0, required: true },
     note: { type: String, trim: true, default: "" },
   },
