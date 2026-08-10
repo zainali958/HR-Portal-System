@@ -76,6 +76,8 @@ export default function PayrollDetailPage() {
                 <th>Employee</th>
                 <th>Designation</th>
                 <th>Proposed Amount</th>
+                <th>Attendance</th>
+                <th>Tasks</th>
                 <th>Note</th>
               </tr>
             </thead>
@@ -85,6 +87,26 @@ export default function PayrollDetailPage() {
                   <td>{e.employee ? e.employee.employeeName : "-"}</td>
                   <td>{e.employee ? e.employee.designation : "-"}</td>
                   <td>{e.proposedAmount.toLocaleString()}</td>
+                  <td>
+                    {e.attendanceFile ? (
+                      <a
+                        href={`data:${e.attendanceFile.mimetype};base64,${e.attendanceFile.data}`}
+                        download={e.attendanceFile.filename}
+                      >
+                        {e.attendanceFile.filename}
+                      </a>
+                    ) : "-"}
+                  </td>
+                  <td>
+                    {e.tasksFile ? (
+                      <a
+                        href={`data:${e.tasksFile.mimetype};base64,${e.tasksFile.data}`}
+                        download={e.tasksFile.filename}
+                      >
+                        {e.tasksFile.filename}
+                      </a>
+                    ) : "-"}
+                  </td>
                   <td>{e.note || "-"}</td>
                 </tr>
               ))}
