@@ -45,7 +45,10 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json());
+// Default 100kb JSON limit is too small once attendance/task files are
+// sent as base64 in the payroll cycle payload - raised to fit small
+// PDFs/images/spreadsheets without needing a separate upload endpoint.
+app.use(express.json({ limit: "15mb" }));
 
 // Rate limit login attempts specifically - brute-force protection on the
 // single most sensitive route in the app.
