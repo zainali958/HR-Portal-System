@@ -71,28 +71,53 @@ router.get("/:id", async (req, res) => {
 router.post("/", async (req, res) => {
   try {
     const {
-      offerId, employeeName, fatherName, cnic, contactNumber, reportsTo,
+      offerId, companyId, designation,
+      employeeName, fatherName, cnic, contactNumber, reportsTo,
       employmentType, dateOfJoining, employmentStatus, jdOnFile,
       basicSalary, houseRentAllowance, medicalAllowance, conveyanceAllowance, otherAllowance,
       incomeTaxDeduction, eobiDeduction, otherDeduction,
       bankName, accountTitle, accountNumber, notes, submit,
     } = req.body;
 
-    if (!offerId) return res.status(400).json({ message: "offerId is required" });
+    let offer = null;
+    let resolvedCompanyId;
+    let resolvedDesignation;
 
-    const offer = await Offer.findById(offerId);
-    if (!offer) return res.status(404).json({ message: "Offer not found" });
+    if (offerId) {
+      // Normal new-hire path - onboarding a candidate from an approved,
+      // accepted Offer.
+      offer = await Offer.findById(offerId);
+      if (!offer) return res.status(404).json({ message: "Offer not found" });
 
-    if (offer.submittedBy.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ message: "Only the person who submitted this offer can start onboarding for it" });
-    }
-    if (offer.status !== "Approved" || offer.candidateResponse !== "Accepted") {
-      return res.status(400).json({ message: "Onboarding can only start once the offer is Approved and the candidate has Accepted" });
-    }
+      if (offer.submittedBy.toString() !== req.user._id.toString()) {
+        return res.status(403).json({ message: "Only the person who submitted this offer can start onboarding for it" });
+      }
+      if (offer.status !== "Approved" || offer.candidateResponse !== "Accepted") {
+        return res.status(400).json({ message: "Onboarding can only start once the offer is Approved and the candidate has Accepted" });
+      }
 
-    const existing = await Onboarding.findOne({ offer: offerId });
-    if (existing) {
-      return res.status(409).json({ message: "An onboarding record already exists for this offer" });
+      const existing = await Onboarding.findOne({ offer: offerId });
+      if (existing) {
+        return res.status(409).json({ message: "An onboarding record already exists for this offer" });
+      }
+
+      resolvedCompanyId = offer.company;
+      resolvedDesignation = offer.designation;
+    } else {
+      // Existing-employee path - no Offer/AmanorX hiring history, entered
+      // directly (e.g. staff who joined before this system existed).
+      // Unit Managers are locked to their own company; HR/CEO must name one.
+      resolvedCompanyId = req.user.role.canViewAllCompanies ? companyId : req.user.company?._id;
+      if (!resolvedCompanyId) {
+        return res.status(400).json({ message: "companyId is required" });
+      }
+      if (!canAccessCompany(req.user, resolvedCompanyId)) {
+        return res.status(403).json({ message: "You don't have access to this company" });
+      }
+      if (!designation) {
+        return res.status(400).json({ message: "designation is required when adding an existing employee" });
+      }
+      resolvedDesignation = designation;
     }
 
     if (!employeeName || !fatherName || !cnic || !reportsTo || !employmentType || !dateOfJoining) {
@@ -102,11 +127,13 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ message: "basicSalary is required for Full-Time/Part-Time employees" });
     }
 
-    const company = await Company.findById(offer.company);
+    const company = await Company.findById(resolvedCompanyId);
 
     const record = await Onboarding.create({
-      offer: offerId,
-      company: offer.company,
+      offer: offer ? offer._id : undefined,
+      isExistingEmployee: !offer,
+      designation: resolvedDesignation,
+      company: resolvedCompanyId,
       submittedBy: req.user._id,
       employerOfRecord: company ? company.legalEmployerName : "",
       employeeName, fatherName, cnic, contactNumber, reportsTo,
@@ -255,14 +282,15 @@ router.post("/:id/decision", requirePermission("canApprove"), async (req, res) =
       if (!alreadyExists) {
         await Employee.create({
           onboarding: record._id,
-          offer: record.offer._id,
+          offer: record.offer || undefined,
           company: record.company._id,
+          submittedBy: record.submittedBy,
           employerOfRecord: record.employerOfRecord,
           employeeName: record.employeeName,
           fatherName: record.fatherName,
           cnic: record.cnic,
           contactNumber: record.contactNumber,
-          designation: record.offer.designation,
+          designation: record.designation,
           reportsTo: record.reportsTo,
           employmentType: record.employmentType,
           dateOfJoining: record.dateOfJoining,
@@ -327,6 +355,9 @@ router.get("/:id/letter", async (req, res) => {
   try {
     const record = await Onboarding.findById(req.params.id).populate("company").populate("offer");
     if (!record) return res.status(404).json({ message: "Onboarding record not found" });
+    if (!record.offer) {
+      return res.status(400).json({ message: "This record has no linked offer, so there's no offer letter to generate - it was added directly as an existing employee" });
+    }
 
     const isSubmitter = record.submittedBy.toString() === req.user._id.toString();
     const isHRorCEO = ["HR", "CEO"].includes(req.user.role.name);
