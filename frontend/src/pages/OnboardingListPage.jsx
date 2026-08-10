@@ -24,7 +24,14 @@ export default function OnboardingListPage() {
   return (
     <div className="page-content">
       <p className="eyebrow">Onboarding</p>
-      <h1>Onboarding Records</h1>
+      <div className="page-header">
+        <h1>Onboarding Records</h1>
+        <Link to="/onboarding/new" className="btn-primary">+ Add Existing Employee</Link>
+      </div>
+      <p className="muted" style={{ marginTop: "-0.6rem" }}>
+        New hires start onboarding from their approved Offer. Use "Add Existing Employee" for staff
+        who never went through the Offer pipeline in this system.
+      </p>
 
       {status.state === "loading" && <p className="muted">Loading...</p>}
       {status.state === "error" && <p className="msg error">{status.message}</p>}
