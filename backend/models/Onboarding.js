@@ -111,6 +111,26 @@ const onboardingSchema = new mongoose.Schema(
     decisionBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     decisionAt: { type: Date, default: null },
 
+    // "Add Existing Employee" records (isExistingEmployee: true) go through
+    // a stricter, sequential two-person approval instead of the single
+    // canApprove decision used for normal offer-based onboarding: HR must
+    // approve first, and only then can CEO act. Mirrors the shape of
+    // bankAccountantDecision/bankFinanceDecision below, but unlike those two
+    // (which are independent/either-order), these are ordered - the CEO
+    // route rejects any attempt before HR has approved.
+    existingEmployeeHRDecision: {
+      decision: { type: String, enum: ["Approved", "Declined", "Changes Requested", null], default: null },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      at: { type: Date, default: null },
+      reason: { type: String, trim: true, default: "" },
+    },
+    existingEmployeeCEODecision: {
+      decision: { type: String, enum: ["Approved", "Declined", "Changes Requested", null], default: null },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+      at: { type: Date, default: null },
+      reason: { type: String, trim: true, default: "" },
+    },
+
     comments: [commentSchema],
 
     syncedToSheetAt: { type: Date, default: null },
