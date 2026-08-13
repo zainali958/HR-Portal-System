@@ -39,7 +39,7 @@ export default function App() {
   <ProtectedRoute><OnboardingListPage /></ProtectedRoute>
 } />
 <Route path="/onboarding/new" element={
-  <ProtectedRoute><OnboardingFormPage /></ProtectedRoute>
+  <ProtectedRoute allowedRoles={["Unit Manager"]}><OnboardingFormPage /></ProtectedRoute>
 } />
 <Route path="/onboarding/:id" element={
   <ProtectedRoute><OnboardingDetailPage /></ProtectedRoute>
