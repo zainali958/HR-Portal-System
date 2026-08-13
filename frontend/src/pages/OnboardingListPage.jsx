@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { getOnboardingRecords } from "../api/onboarding";
+import { useAuth } from "../context/AuthContext";
 import StatusBadge from "../components/StatusBadge";
 
 export default function OnboardingListPage() {
+  const { isUnitManager } = useAuth();
   const [records, setRecords] = useState([]);
   const [status, setStatus] = useState({ state: "loading", message: "" });
 
@@ -26,11 +28,14 @@ export default function OnboardingListPage() {
       <p className="eyebrow">Onboarding</p>
       <div className="page-header">
         <h1>Onboarding Records</h1>
-        <Link to="/onboarding/new" className="btn-primary">+ Add Existing Employee</Link>
+        {isUnitManager && (
+          <Link to="/onboarding/new" className="btn-primary">+ Add Existing Employee</Link>
+        )}
       </div>
       <p className="muted" style={{ marginTop: "-0.6rem" }}>
-        New hires start onboarding from their approved Offer. Use "Add Existing Employee" for staff
-        who never went through the Offer pipeline in this system.
+        New hires start onboarding from their approved Offer. Only a Team Lead (Unit Manager) can
+        use "Add Existing Employee" for staff who never went through the Offer pipeline - it then
+        needs HR and CEO approval, in that order.
       </p>
 
       {status.state === "loading" && <p className="muted">Loading...</p>}
