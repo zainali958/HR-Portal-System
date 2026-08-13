@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { getOffer } from "../api/offers";
 import { createOnboarding } from "../api/onboarding";
-import { getCompanies } from "../api/companies";
 import { useAuth } from "../context/AuthContext";
 
 export default function OnboardingFormPage() {
@@ -10,12 +9,13 @@ export default function OnboardingFormPage() {
   const offerId = searchParams.get("offerId");
   const isExistingEmployee = !offerId;
   const navigate = useNavigate();
-  const { user, isHR, isCEO } = useAuth();
-  const canPickCompany = isHR || isCEO; // Unit Managers are locked to their own company
+  const { user } = useAuth();
+  // The route itself is restricted to Unit Manager (see App.jsx), so the
+  // existing-employee path is always locked to the submitter's own company -
+  // this then requires sequential HR-then-CEO approval before it becomes a
+  // real Employee record.
 
   const [offer, setOffer] = useState(null);
-  const [companies, setCompanies] = useState([]);
-  const [companyId, setCompanyId] = useState("");
   const [designation, setDesignation] = useState("");
   const [loadError, setLoadError] = useState("");
   const [submitError, setSubmitError] = useState("");
@@ -62,17 +62,8 @@ export default function OnboardingFormPage() {
           }));
         })
         .catch(() => setLoadError("Could not load the linked offer."));
-      return;
     }
-
-    // Existing-employee path - HR/CEO need a company to pick from; a Unit
-    // Manager is locked to their own, so no need to fetch the full list.
-    if (canPickCompany) {
-      getCompanies()
-        .then(setCompanies)
-        .catch(() => setLoadError("Failed to load companies"));
-    }
-  }, [offerId, isExistingEmployee, canPickCompany]);
+  }, [offerId, isExistingEmployee]);
 
   function updateField(field, value) {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -107,22 +98,16 @@ export default function OnboardingFormPage() {
       setSubmitError("Basic Salary is required for Full-Time/Part-Time employees");
       return;
     }
-    if (isExistingEmployee) {
-      if (!designation.trim()) {
-        setSubmitError("Designation is required");
-        return;
-      }
-      if (canPickCompany && !companyId) {
-        setSubmitError("Company is required");
-        return;
-      }
+    if (isExistingEmployee && !designation.trim()) {
+      setSubmitError("Designation is required");
+      return;
     }
 
     setSubmitting(true);
     try {
       const payload = {
         ...(isExistingEmployee
-          ? { designation: designation.trim(), ...(canPickCompany ? { companyId } : {}) }
+          ? { designation: designation.trim() }
           : { offerId }),
         employeeName: form.employeeName,
         fatherName: form.fatherName,
@@ -173,6 +158,7 @@ export default function OnboardingFormPage() {
           <h1>Add Existing Employee</h1>
           <p className="muted">
             For staff who already work here but never went through the Offer pipeline in this system.
+            This record needs sequential approval from HR, then CEO, before it becomes an active employee.
           </p>
         </>
       ) : (
@@ -190,22 +176,10 @@ export default function OnboardingFormPage() {
         {isExistingEmployee && (
           <>
             <h3>Role</h3>
-            {canPickCompany ? (
-              <label>
-                Company
-                <select value={companyId} onChange={(e) => setCompanyId(e.target.value)} required>
-                  <option value="">Select a company...</option>
-                  {companies.map((c) => (
-                    <option key={c._id} value={c._id}>{c.name}</option>
-                  ))}
-                </select>
-              </label>
-            ) : (
-              <label>
-                Company
-                <input value={user?.company || ""} disabled />
-              </label>
-            )}
+            <label>
+              Company
+              <input value={user?.company || ""} disabled />
+            </label>
             <label>
               Designation
               <input value={designation} onChange={(e) => setDesignation(e.target.value)} placeholder="e.g. Senior Software Engineer" required />
