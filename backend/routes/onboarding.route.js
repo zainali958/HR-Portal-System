@@ -18,14 +18,60 @@ const ONBOARDING_POPULATE = [
   { path: "decisionBy", select: "fullName email" },
   { path: "bankAccountantDecision.by", model: "User", select: "fullName email" },
   { path: "bankFinanceDecision.by", model: "User", select: "fullName email" },
+  { path: "existingEmployeeHRDecision.by", model: "User", select: "fullName email" },
+  { path: "existingEmployeeCEODecision.by", model: "User", select: "fullName email" },
   { path: "comments.author", select: "fullName email" },
 ];
+
+// Shared by both approval paths (normal /decision and the existing-employee
+// CEO decision) so the "what happens when a record finally hits Approved"
+// logic - opening the bank-details gate and creating the permanent Employee
+// record - only lives in one place.
+async function applyApprovalSideEffects(record) {
+  if (record.bankDetailsStatus === "Not Started") {
+    record.bankDetailsStatus = "Pending";
+    await record.save();
+  }
+
+  const alreadyExists = await Employee.findOne({ onboarding: record._id });
+  if (!alreadyExists) {
+    await Employee.create({
+      onboarding: record._id,
+      offer: record.offer || undefined,
+      company: record.company._id,
+      submittedBy: record.submittedBy,
+      employerOfRecord: record.employerOfRecord,
+      employeeName: record.employeeName,
+      fatherName: record.fatherName,
+      cnic: record.cnic,
+      contactNumber: record.contactNumber,
+      designation: record.designation,
+      reportsTo: record.reportsTo,
+      employmentType: record.employmentType,
+      dateOfJoining: record.dateOfJoining,
+      employmentStatus: record.employmentStatus,
+      jdOnFile: record.jdOnFile,
+      basicSalary: record.basicSalary,
+      houseRentAllowance: record.houseRentAllowance,
+      medicalAllowance: record.medicalAllowance,
+      conveyanceAllowance: record.conveyanceAllowance,
+      otherAllowance: record.otherAllowance,
+      incomeTaxDeduction: record.incomeTaxDeduction,
+      eobiDeduction: record.eobiDeduction,
+      otherDeduction: record.otherDeduction,
+      bankName: record.bankName,
+      accountTitle: record.accountTitle,
+      accountNumber: record.accountNumber,
+      notes: record.notes,
+    });
+  }
+}
 
 // Recomputes bankDetailsStatus from the two independent decisions - either
 // approver can act first, order doesn't matter. A Decline or Changes
 // Requested from EITHER side overrides the other; both must say Approved
-// for it to actually clear. Declared at module scope (not inside a route
-// handler) so every route below can call it.
+// for it to actually clear. Declared at module scope so every route below
+// can call it.
 function recomputeBankDetailsStatus(record) {
   const a = record.bankAccountantDecision?.decision;
   const f = record.bankFinanceDecision?.decision;
@@ -106,8 +152,13 @@ router.post("/", async (req, res) => {
     } else {
       // Existing-employee path - no Offer/AmanorX hiring history, entered
       // directly (e.g. staff who joined before this system existed).
-      // Unit Managers are locked to their own company; HR/CEO must name one.
-      resolvedCompanyId = req.user.role.canViewAllCompanies ? companyId : req.user.company?._id;
+      // Only a Unit Manager (Team Lead) may start this path at all - it
+      // then requires sequential HR-then-CEO approval below, so HR/CEO no
+      // longer create these themselves.
+      if (req.user.role.name !== "Unit Manager") {
+        return res.status(403).json({ message: "Only a Unit Manager (Team Lead) can add an existing employee" });
+      }
+      resolvedCompanyId = req.user.company?._id;
       if (!resolvedCompanyId) {
         return res.status(400).json({ message: "companyId is required" });
       }
@@ -211,6 +262,13 @@ router.patch("/:id", async (req, res) => {
     const wasChangesRequested = record.status === "Changes Requested";
     if (wasChangesRequested && req.body.resubmit) {
       record.status = "Pending";
+      // Reset the sequential HR->CEO gate so both stages re-review the
+      // updated record fresh, the same way bank-details resubmission
+      // resets both bank decisions.
+      if (record.isExistingEmployee) {
+        record.existingEmployeeHRDecision = { decision: null, by: null, at: null, reason: "" };
+        record.existingEmployeeCEODecision = { decision: null, by: null, at: null, reason: "" };
+      }
     }
 
     await record.save();
@@ -244,6 +302,9 @@ router.post("/:id/decision", requirePermission("canApprove"), async (req, res) =
 
     const existing = await Onboarding.findById(req.params.id);
     if (!existing) return res.status(404).json({ message: "Onboarding record not found" });
+    if (existing.isExistingEmployee) {
+      return res.status(400).json({ message: "Existing-employee records require sequential HR then CEO approval - use the HR/CEO decision actions instead" });
+    }
     if (existing.submittedBy.toString() === req.user._id.toString()) {
       return res.status(403).json({ message: "You cannot approve your own submission" });
     }
@@ -268,51 +329,136 @@ router.post("/:id/decision", requirePermission("canApprove"), async (req, res) =
       return res.status(409).json({ message: "This record was already decided on by someone else - refresh to see the current status" });
     }
 
-    // Approving the overall record opens the separate bank-details gate -
-    // Accountant and Finance can now independently review it.
-    if (decision === "Approved" && record.bankDetailsStatus === "Not Started") {
-      record.bankDetailsStatus = "Pending";
-      await record.save();
-    }
-
-    // Auto-create the permanent Employee record once Approved - carries
-    // over the full payroll breakdown, not just a flat salary number.
+    // Approving the overall record opens the separate bank-details gate and
+    // auto-creates the permanent Employee record.
     if (decision === "Approved") {
-      const alreadyExists = await Employee.findOne({ onboarding: record._id });
-      if (!alreadyExists) {
-        await Employee.create({
-          onboarding: record._id,
-          offer: record.offer || undefined,
-          company: record.company._id,
-          submittedBy: record.submittedBy,
-          employerOfRecord: record.employerOfRecord,
-          employeeName: record.employeeName,
-          fatherName: record.fatherName,
-          cnic: record.cnic,
-          contactNumber: record.contactNumber,
-          designation: record.designation,
-          reportsTo: record.reportsTo,
-          employmentType: record.employmentType,
-          dateOfJoining: record.dateOfJoining,
-          employmentStatus: record.employmentStatus,
-          jdOnFile: record.jdOnFile,
-          basicSalary: record.basicSalary,
-          houseRentAllowance: record.houseRentAllowance,
-          medicalAllowance: record.medicalAllowance,
-          conveyanceAllowance: record.conveyanceAllowance,
-          otherAllowance: record.otherAllowance,
-          incomeTaxDeduction: record.incomeTaxDeduction,
-          eobiDeduction: record.eobiDeduction,
-          otherDeduction: record.otherDeduction,
-          bankName: record.bankName,
-          accountTitle: record.accountTitle,
-          accountNumber: record.accountNumber,
-          notes: record.notes,
-        });
-      }
+      await applyApprovalSideEffects(record);
     }
 
     const actionMap = { Approved: "approved", Declined: "declined", "Changes Requested": "changes_requested" };
+    await logAction({ entityType: "Onboarding", entityId: record._id, action: actionMap[decision], performedBy: req.user._id, details: { reason: reason || null } });
+
+    res.json(record);
+  } catch (err) {
+    res.status(500).json({ message: "Something went wrong", error: err.message });
+  }
+});
+
+// POST /api/onboarding/:id/hr-decision - HR only. First stage of the
+// sequential approval required for "Add Existing Employee" records
+// (isExistingEmployee: true). CEO cannot act until this stage is Approved.
+router.post("/:id/hr-decision", requireRole("HR"), async (req, res) => {
+  try {
+    const { decision, reason } = req.body;
+    const validDecisions = ["Approved", "Declined", "Changes Requested"];
+    if (!validDecisions.includes(decision)) {
+      return res.status(400).json({ message: `decision must be one of: ${validDecisions.join(", ")}` });
+    }
+    if (decision !== "Approved" && !reason) {
+      return res.status(400).json({ message: "A reason is required for Declined or Changes Requested" });
+    }
+
+    const existing = await Onboarding.findById(req.params.id);
+    if (!existing) return res.status(404).json({ message: "Onboarding record not found" });
+    if (!existing.isExistingEmployee) {
+      return res.status(400).json({ message: "This route is only for Add Existing Employee records - use /decision for normal onboarding" });
+    }
+    if (existing.status !== "Pending") {
+      return res.status(400).json({ message: `Cannot decide on a record that is currently "${existing.status}"` });
+    }
+    if (existing.existingEmployeeHRDecision?.decision) {
+      return res.status(409).json({ message: "HR has already made a decision on this record" });
+    }
+
+    const update = {
+      existingEmployeeHRDecision: { decision, by: req.user._id, at: new Date(), reason: reason || "" },
+    };
+    // Only a Declined/Changes Requested HR decision resolves the overall
+    // record status by itself - an HR Approval leaves status "Pending" so
+    // the record still shows up for CEO to act on next.
+    if (decision !== "Approved") {
+      update.status = decision;
+      update.decisionReason = reason || "";
+      update.decisionBy = req.user._id;
+      update.decisionAt = new Date();
+    }
+    if (reason) {
+      update.$push = { comments: { author: req.user._id, message: `HR: ${reason}` } };
+    }
+
+    const record = await Onboarding.findOneAndUpdate(
+      { _id: req.params.id, status: "Pending", "existingEmployeeHRDecision.decision": null },
+      update,
+      { new: true }
+    ).populate(ONBOARDING_POPULATE);
+
+    if (!record) {
+      return res.status(409).json({ message: "This record was already decided on by someone else - refresh to see the current status" });
+    }
+
+    const actionMap = { Approved: "hr_approved", Declined: "hr_declined", "Changes Requested": "hr_changes_requested" };
+    await logAction({ entityType: "Onboarding", entityId: record._id, action: actionMap[decision], performedBy: req.user._id, details: { reason: reason || null } });
+
+    res.json(record);
+  } catch (err) {
+    res.status(500).json({ message: "Something went wrong", error: err.message });
+  }
+});
+
+// POST /api/onboarding/:id/ceo-decision - CEO only. Second/final stage for
+// "Add Existing Employee" records - only usable once HR has approved.
+router.post("/:id/ceo-decision", requireRole("CEO"), async (req, res) => {
+  try {
+    const { decision, reason } = req.body;
+    const validDecisions = ["Approved", "Declined", "Changes Requested"];
+    if (!validDecisions.includes(decision)) {
+      return res.status(400).json({ message: `decision must be one of: ${validDecisions.join(", ")}` });
+    }
+    if (decision !== "Approved" && !reason) {
+      return res.status(400).json({ message: "A reason is required for Declined or Changes Requested" });
+    }
+
+    const existing = await Onboarding.findById(req.params.id);
+    if (!existing) return res.status(404).json({ message: "Onboarding record not found" });
+    if (!existing.isExistingEmployee) {
+      return res.status(400).json({ message: "This route is only for Add Existing Employee records - use /decision for normal onboarding" });
+    }
+    if (existing.existingEmployeeHRDecision?.decision !== "Approved") {
+      return res.status(400).json({ message: "HR must approve this record before CEO can decide on it" });
+    }
+    if (existing.status !== "Pending") {
+      return res.status(400).json({ message: `Cannot decide on a record that is currently "${existing.status}"` });
+    }
+    if (existing.existingEmployeeCEODecision?.decision) {
+      return res.status(409).json({ message: "CEO has already made a decision on this record" });
+    }
+
+    const update = {
+      existingEmployeeCEODecision: { decision, by: req.user._id, at: new Date(), reason: reason || "" },
+      status: decision,
+      decisionReason: reason || "",
+      decisionBy: req.user._id,
+      decisionAt: new Date(),
+    };
+    if (reason) {
+      update.$push = { comments: { author: req.user._id, message: `CEO: ${reason}` } };
+    }
+
+    const record = await Onboarding.findOneAndUpdate(
+      { _id: req.params.id, status: "Pending", "existingEmployeeCEODecision.decision": null },
+      update,
+      { new: true }
+    ).populate(ONBOARDING_POPULATE);
+
+    if (!record) {
+      return res.status(409).json({ message: "This record was already decided on by someone else - refresh to see the current status" });
+    }
+
+    if (decision === "Approved") {
+      await applyApprovalSideEffects(record);
+    }
+
+    const actionMap = { Approved: "ceo_approved", Declined: "ceo_declined", "Changes Requested": "ceo_changes_requested" };
     await logAction({ entityType: "Onboarding", entityId: record._id, action: actionMap[decision], performedBy: req.user._id, details: { reason: reason || null } });
 
     res.json(record);
