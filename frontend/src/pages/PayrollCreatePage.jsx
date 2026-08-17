@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getCompanies } from "../api/companies";
 import { getEmployees } from "../api/employees";
-import { createPayrollCycle } from "../api/payroll";
+import { createPayrollCycle, previewAttendance } from "../api/payroll";
 
 export default function PayrollCreatePage() {
   const navigate = useNavigate();
@@ -47,7 +47,10 @@ export default function PayrollCreatePage() {
     setEntries((prev) => {
       const next = { ...prev };
       if (checked) {
-        next[empId] = { included: true, proposedAmount: "", attendanceFile: null, tasksFile: null, note: "" };
+        next[empId] = {
+          included: true, proposedAmount: "", attendanceFile: null, leaveFile: null, tasksFile: null, note: "",
+          attendancePreview: null, attendanceError: "", previewLoading: false,
+        };
       } else {
         delete next[empId];
       }
@@ -65,6 +68,10 @@ export default function PayrollCreatePage() {
     const file = fileList && fileList[0];
     if (!file) {
       updateEntry(empId, field, null);
+      if (field === "attendanceFile" || field === "leaveFile") {
+        updateEntry(empId, "attendancePreview", null);
+        updateEntry(empId, "attendanceError", "");
+      }
       return;
     }
     if (file.size > MAX_FILE_BYTES) {
@@ -76,10 +83,52 @@ export default function PayrollCreatePage() {
       // reader.result is "data:<mimetype>;base64,<data>" - only the part
       // after the comma is the actual base64 payload we store.
       const base64 = reader.result.split(",")[1];
-      updateEntry(empId, field, { filename: file.name, mimetype: file.type || "application/octet-stream", data: base64 });
+      const fileObj = { filename: file.name, mimetype: file.type || "application/octet-stream", data: base64 };
+
+      setEntries((prev) => {
+        const updatedEntry = { ...prev[empId], [field]: fileObj };
+
+        // The check-in log drives the automatic deduction; the leave file
+        // is optional context for it. Re-run the preview whenever either
+        // one changes, using whichever files are currently selected.
+        if ((field === "attendanceFile" || field === "leaveFile") && updatedEntry.attendanceFile) {
+          updatedEntry.previewLoading = true;
+          updatedEntry.attendanceError = "";
+          previewAttendance(empId, month, updatedEntry.attendanceFile, updatedEntry.leaveFile)
+            .then((result) => {
+              setEntries((p2) => ({
+                ...p2,
+                [empId]: { ...p2[empId], attendancePreview: result, proposedAmount: String(result.suggestedProposedAmount), previewLoading: false, attendanceError: "" },
+              }));
+            })
+            .catch((err) => {
+              setEntries((p2) => ({
+                ...p2,
+                [empId]: { ...p2[empId], attendancePreview: null, previewLoading: false, attendanceError: err.response?.data?.message || "Failed to read the attendance/leave file" },
+              }));
+            });
+        }
+
+        return { ...prev, [empId]: updatedEntry };
+      });
     };
     reader.onerror = () => setSubmitError(`Failed to read ${file.name}`);
     reader.readAsDataURL(file);
+  }
+
+  function downloadTemplate(kind) {
+    const rows = kind === "attendance"
+      ? ["Date,Username,Full Name,Department,Check-In Time,Late,Check-Out Time,Working Hours",
+         "2026-07-01,zain,Zain Ali,IT,09:05:00,No,18:02:00,8h 57m",
+         "2026-07-02,zain,Zain Ali,IT,12:07:07,Yes,,"]
+      : ["Date,Reason", "2026-07-06,Sick leave - approved"];
+    const blob = new Blob([rows.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = kind === "attendance" ? "attendance-checkin-template.csv" : "leave-requests-template.csv";
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   async function handleSubmit(e) {
@@ -110,6 +159,7 @@ export default function PayrollCreatePage() {
           employee: empId,
           proposedAmount: Number(v.proposedAmount),
           attendanceFile: v.attendanceFile,
+          leaveFile: v.leaveFile,
           tasksFile: v.tasksFile,
           note: v.note,
         })),
@@ -157,7 +207,23 @@ export default function PayrollCreatePage() {
 
         {employees.length > 0 && (
           <>
-            <h3>Employees</h3>
+            <div className="page-header" style={{ marginBottom: "0.4rem" }}>
+              <h3 style={{ margin: 0 }}>Employees</h3>
+              <div style={{ display: "flex", gap: "0.5rem" }}>
+                <button type="button" className="btn-secondary" onClick={() => downloadTemplate("attendance")}>
+                  Download Check-In Template
+                </button>
+                <button type="button" className="btn-secondary" onClick={() => downloadTemplate("leave")}>
+                  Download Leave Template
+                </button>
+              </div>
+            </div>
+            <p className="muted" style={{ marginTop: "-0.4rem" }}>
+              Upload each employee's check-in log (exported from AttendanceSystem) and pay is deducted
+              automatically: any weekday with no check-in and no approved leave request deducts a full
+              day's pay, an approved leave deducts half a day's pay, and more than 3 late check-ins in
+              the month cost a quarter-day each. Sundays are treated as the weekly off and never deducted.
+            </p>
             {employees.map((emp) => {
               const entry = entries[emp._id];
               const included = !!entry?.included;
@@ -175,21 +241,15 @@ export default function PayrollCreatePage() {
 
                   {included && (
                     <>
+                      {!month && (
+                        <p className="msg error" style={{ marginTop: "0.4rem" }}>Pick a month above first, so attendance can be matched to the right calendar days.</p>
+                      )}
                       <label>
-                        Proposed Amount
-                        <input
-                          type="number"
-                          min="0"
-                          value={entry.proposedAmount}
-                          onChange={(e) => updateEntry(emp._id, "proposedAmount", e.target.value)}
-                          required
-                        />
-                      </label>
-                      <label>
-                        Attendance Sheet <span className="optional">(optional)</span>
+                        Check-In Log <span className="optional">(.csv/.xlsx export from AttendanceSystem — required for auto-calculation)</span>
                         <input
                           type="file"
-                          accept=".pdf,.jpg,.jpeg,.png,.csv,.xlsx,.xls"
+                          accept=".csv,.xlsx,.xls"
+                          disabled={!month}
                           onChange={(e) => handleFileChange(emp._id, "attendanceFile", e.target.files)}
                         />
                         {entry.attendanceFile && (
@@ -197,6 +257,50 @@ export default function PayrollCreatePage() {
                             Selected: {entry.attendanceFile.filename}
                           </span>
                         )}
+                      </label>
+                      <label>
+                        Approved Leave Requests <span className="optional">(.csv/.xlsx, optional — dates not listed here count as Uninformed)</span>
+                        <input
+                          type="file"
+                          accept=".csv,.xlsx,.xls"
+                          onChange={(e) => handleFileChange(emp._id, "leaveFile", e.target.files)}
+                        />
+                        {entry.leaveFile && (
+                          <span className="muted" style={{ display: "block", marginTop: "0.3rem" }}>
+                            Selected: {entry.leaveFile.filename}
+                          </span>
+                        )}
+                      </label>
+
+                      {entry.previewLoading && <p className="muted">Calculating deduction from attendance...</p>}
+                      {entry.attendanceError && <p className="msg error">{entry.attendanceError}</p>}
+                      {entry.attendancePreview && (
+                        <div className="card" style={{ background: "var(--bg-subtle, #f7f7f7)", padding: "0.8rem", marginBottom: "0.8rem" }}>
+                          <dl className="review-list" style={{ margin: 0 }}>
+                            <dt>Working Days</dt><dd>{entry.attendancePreview.summary.workingDays} of {entry.attendancePreview.summary.totalDaysInMonth} ({entry.attendancePreview.summary.weeklyOffDays} Sunday off)</dd>
+                            <dt>Present</dt><dd>{entry.attendancePreview.summary.presentDays}</dd>
+                            <dt>Informed Leave</dt>
+                            <dd>{entry.attendancePreview.summary.informedLeaveDays} day(s) — deducts {entry.attendancePreview.deduction.informedLeaveDeduction.toLocaleString()}</dd>
+                            <dt>Uninformed Leave / Absent</dt>
+                            <dd>{entry.attendancePreview.summary.uninformedLeaveDays} day(s) — deducts {entry.attendancePreview.deduction.uninformedLeaveDeduction.toLocaleString()}</dd>
+                            <dt>Late Check-Ins</dt>
+                            <dd>{entry.attendancePreview.summary.lateDays} total, {entry.attendancePreview.deduction.chargeableLateDays} chargeable — deducts {entry.attendancePreview.deduction.lateDeduction.toLocaleString()}</dd>
+                            <dt>Per-Day Rate</dt><dd>{entry.attendancePreview.deduction.perDayRate.toLocaleString()}</dd>
+                            <dt>Total Deduction</dt><dd>{entry.attendancePreview.deduction.totalDeduction.toLocaleString()}</dd>
+                            <dt>Suggested Net Pay</dt><dd><strong>{entry.attendancePreview.suggestedProposedAmount.toLocaleString()}</strong></dd>
+                          </dl>
+                        </div>
+                      )}
+
+                      <label>
+                        Proposed Amount {entry.attendancePreview && <span className="optional">(auto-filled from attendance — you can still adjust it)</span>}
+                        <input
+                          type="number"
+                          min="0"
+                          value={entry.proposedAmount}
+                          onChange={(e) => updateEntry(emp._id, "proposedAmount", e.target.value)}
+                          required
+                        />
                       </label>
                       <label>
                         Task Report <span className="optional">(optional)</span>
