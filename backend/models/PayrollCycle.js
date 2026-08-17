@@ -29,12 +29,40 @@ const fileSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Computed breakdown from parsing an uploaded attendance file - stored so
+// Finance/Accountant/CEO reviewers can see exactly why the proposed amount
+// is what it is, without re-opening the raw file. Null when no attendance
+// file was uploaded for that entry (HR typed the amount by hand instead).
+const attendanceSummarySchema = new mongoose.Schema(
+  {
+    totalDaysInMonth: { type: Number, default: 0 },
+    workingDays: { type: Number, default: 0 },
+    presentDays: { type: Number, default: 0 },
+    weeklyOffDays: { type: Number, default: 0 },
+    informedLeaveDays: { type: Number, default: 0 },
+    uninformedLeaveDays: { type: Number, default: 0 },
+    lateDays: { type: Number, default: 0 },
+    chargeableLateDays: { type: Number, default: 0 },
+    perDayRate: { type: Number, default: 0 },
+    informedLeaveDeduction: { type: Number, default: 0 },
+    uninformedLeaveDeduction: { type: Number, default: 0 },
+    lateDeduction: { type: Number, default: 0 },
+    totalDeduction: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
 const entrySchema = new mongoose.Schema(
   {
     employee: { type: mongoose.Schema.Types.ObjectId, ref: "Employee", required: true },
     attendanceFile: { type: fileSchema, default: null },
+    // Separate export from AttendanceSystem listing approved/informed
+    // leave requests - the check-in log alone can't tell an approved leave
+    // apart from an unexplained absence, since both are just "no row".
+    leaveFile: { type: fileSchema, default: null },
     tasksFile: { type: fileSchema, default: null },
     proposedAmount: { type: Number, min: 0, required: true },
+    attendanceSummary: { type: attendanceSummarySchema, default: null },
     note: { type: String, trim: true, default: "" },
   },
   { _id: false }
