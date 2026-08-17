@@ -27,6 +27,18 @@ export async function decideOnboarding(id, decision, reason) {
   const { data } = await client.post(`/onboarding/${id}/decision`, { decision, reason });
   return data;
 }
+
+// The two sequential stages for "Add Existing Employee" records - HR must
+// approve before ceoDecision (below) can be used.
+export async function hrDecision(id, decision, reason) {
+  const { data } = await client.post(`/onboarding/${id}/hr-decision`, { decision, reason });
+  return data;
+}
+
+export async function ceoDecision(id, decision, reason) {
+  const { data } = await client.post(`/onboarding/${id}/ceo-decision`, { decision, reason });
+  return data;
+}
 export async function downloadOfferLetter(id, filename) {
   const { data } = await client.get(`/onboarding/${id}/letter`, { responseType: "blob" });
   const url = window.URL.createObjectURL(new Blob([data]));
