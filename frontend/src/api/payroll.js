@@ -15,6 +15,13 @@ export async function createPayrollCycle(payload) {
   return data;
 }
 
+// Previews the attendance-based deduction for one employee before the
+// cycle is submitted, so HR can see the breakdown and adjust if needed.
+export async function previewAttendance(employeeId, month, attendanceFile, leaveFile) {
+  const { data } = await client.post("/payroll/parse-attendance", { employeeId, month, attendanceFile, leaveFile });
+  return data;
+}
+
 export async function financeDecidePayroll(id, decision, reason) {
   const { data } = await client.post(`/payroll/${id}/finance-decision`, { decision, reason });
   return data;
