@@ -1,12 +1,12 @@
 import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
-import { getOnboardingRecord, decideOnboarding, downloadOfferLetter, accountantBankDecision, financeBankDecision, updateBankDetails } from "../api/onboarding";
+import { getOnboardingRecord, decideOnboarding, hrDecision, ceoDecision, downloadOfferLetter, accountantBankDecision, financeBankDecision, updateBankDetails } from "../api/onboarding";
 import { useAuth } from "../context/AuthContext";
 import StatusBadge from "../components/StatusBadge";
 
 export default function OnboardingDetailPage() {
   const { id } = useParams();
-  const { user, canApprove, isAccountant, isFinance } = useAuth();
+  const { user, canApprove, isHR, isCEO, isAccountant, isFinance } = useAuth();
 
   const [record, setRecord] = useState(null);
   const [status, setStatus] = useState({ state: "loading", message: "" });
@@ -52,6 +52,42 @@ export default function OnboardingDetailPage() {
         ? err.response.data.message
         : "Failed to record decision";
       setActionError(message);
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleHRDecision(decision) {
+    setActionError("");
+    if (decision !== "Approved" && !decisionReason.trim()) {
+      setActionError("A reason is required for Declined or Changes Requested");
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const updated = await hrDecision(id, decision, decisionReason.trim());
+      setRecord(updated);
+      setDecisionReason("");
+    } catch (err) {
+      setActionError(err.response?.data?.message || "Failed to record decision");
+    } finally {
+      setActionLoading(false);
+    }
+  }
+
+  async function handleCEODecision(decision) {
+    setActionError("");
+    if (decision !== "Approved" && !decisionReason.trim()) {
+      setActionError("A reason is required for Declined or Changes Requested");
+      return;
+    }
+    setActionLoading(true);
+    try {
+      const updated = await ceoDecision(id, decision, decisionReason.trim());
+      setRecord(updated);
+      setDecisionReason("");
+    } catch (err) {
+      setActionError(err.response?.data?.message || "Failed to record decision");
     } finally {
       setActionLoading(false);
     }
@@ -119,8 +155,15 @@ export default function OnboardingDetailPage() {
   if (status.state === "error") return <div className="page-content"><p className="msg error">{status.message}</p></div>;
   if (!record) return null;
 
-  const canDecide = canApprove && record.status === "Pending" && !isSubmitter;
+  // Normal offer-based onboarding: single decision by any canApprove role.
+  // "Add Existing Employee" records use the sequential HR-then-CEO gate
+  // below instead, so they're excluded here.
+  const canDecide = canApprove && record.status === "Pending" && !isSubmitter && !record.isExistingEmployee;
   const isIntern = record.employmentType === "Intern";
+
+  const canHRDecide = record.isExistingEmployee && isHR && record.status === "Pending" && !record.existingEmployeeHRDecision?.decision;
+  const canCEODecide = record.isExistingEmployee && isCEO && record.status === "Pending"
+    && record.existingEmployeeHRDecision?.decision === "Approved" && !record.existingEmployeeCEODecision?.decision;
 
   return (
     <div className="page-content">
@@ -240,11 +283,13 @@ export default function OnboardingDetailPage() {
           </div>
         )}
 
-        <div className="decision-box">
-          <h3>Offer Letter</h3>
-          <p className="muted">Generates the letter using company details, job description, and reporting info on file.</p>
-          <button className="btn-secondary" onClick={handleDownloadLetter}>Download Offer Letter (.docx)</button>
-        </div>
+        {!record.isExistingEmployee && (
+          <div className="decision-box">
+            <h3>Offer Letter</h3>
+            <p className="muted">Generates the letter using company details, job description, and reporting info on file.</p>
+            <button className="btn-secondary" onClick={handleDownloadLetter}>Download Offer Letter (.docx)</button>
+          </div>
+        )}
 
         <dl className="review-list">
           <dt>Synced to Master Sheet</dt>
@@ -252,6 +297,57 @@ export default function OnboardingDetailPage() {
         </dl>
 
         {actionError && <p className="msg error">{actionError}</p>}
+
+        {record.isExistingEmployee && (
+          <div className="decision-box">
+            <h3>Approval — HR then CEO</h3>
+            <p className="muted" style={{ marginTop: "-0.4rem" }}>
+              Added by a Team Lead. This record only becomes an active employee once HR approves it,
+              followed by the CEO.
+            </p>
+            <dl className="review-list">
+              <dt>HR Decision</dt>
+              <dd>
+                {record.existingEmployeeHRDecision?.by
+                  ? `${record.existingEmployeeHRDecision.decision} — ${record.existingEmployeeHRDecision.by.fullName} (${new Date(record.existingEmployeeHRDecision.at).toLocaleString()})${record.existingEmployeeHRDecision.reason ? `: ${record.existingEmployeeHRDecision.reason}` : ""}`
+                  : "Awaiting HR review"}
+              </dd>
+              <dt>CEO Decision</dt>
+              <dd>
+                {record.existingEmployeeCEODecision?.by
+                  ? `${record.existingEmployeeCEODecision.decision} — ${record.existingEmployeeCEODecision.by.fullName} (${new Date(record.existingEmployeeCEODecision.at).toLocaleString()})${record.existingEmployeeCEODecision.reason ? `: ${record.existingEmployeeCEODecision.reason}` : ""}`
+                  : record.existingEmployeeHRDecision?.decision === "Approved"
+                  ? "Awaiting CEO review"
+                  : "Waiting on HR first"}
+              </dd>
+            </dl>
+
+            {(canHRDecide || canCEODecide) && (
+              <>
+                <label>
+                  Reason <span className="optional">(required for Decline / Changes Requested)</span>
+                  <textarea value={decisionReason} onChange={(e) => setDecisionReason(e.target.value)} rows={2} />
+                </label>
+                <div className="wizard-actions">
+                  {canHRDecide && (
+                    <>
+                      <button className="btn-primary" disabled={actionLoading} onClick={() => handleHRDecision("Approved")}>Approve (HR)</button>
+                      <button className="btn-secondary" disabled={actionLoading} onClick={() => handleHRDecision("Changes Requested")}>Request Changes</button>
+                      <button className="btn-danger" disabled={actionLoading} onClick={() => handleHRDecision("Declined")}>Decline</button>
+                    </>
+                  )}
+                  {canCEODecide && (
+                    <>
+                      <button className="btn-primary" disabled={actionLoading} onClick={() => handleCEODecision("Approved")}>Approve (CEO)</button>
+                      <button className="btn-secondary" disabled={actionLoading} onClick={() => handleCEODecision("Changes Requested")}>Request Changes</button>
+                      <button className="btn-danger" disabled={actionLoading} onClick={() => handleCEODecision("Declined")}>Decline</button>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
+          </div>
+        )}
 
         {canDecide && (
           <div className="decision-box">
