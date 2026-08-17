@@ -113,6 +113,41 @@ export default function PayrollDetailPage() {
             </tbody>
           </table>
         </div>
+
+        {cycle.entries.some((e) => e.attendanceSummary) && (
+          <div className="card" style={{ marginTop: "0.8rem" }}>
+            <h4 style={{ marginTop: 0 }}>Attendance Deductions</h4>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Employee</th>
+                    <th>Working Days</th>
+                    <th>Informed Leave</th>
+                    <th>Uninformed Leave</th>
+                    <th>Late (chargeable)</th>
+                    <th>Per-Day Rate</th>
+                    <th>Total Deduction</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cycle.entries.filter((e) => e.attendanceSummary).map((e, i) => (
+                    <tr key={i}>
+                      <td>{e.employee ? e.employee.employeeName : "-"}</td>
+                      <td>{e.attendanceSummary.workingDays} / {e.attendanceSummary.totalDaysInMonth}</td>
+                      <td>{e.attendanceSummary.informedLeaveDays} day(s) — {e.attendanceSummary.informedLeaveDeduction.toLocaleString()}</td>
+                      <td>{e.attendanceSummary.uninformedLeaveDays} day(s) — {e.attendanceSummary.uninformedLeaveDeduction.toLocaleString()}</td>
+                      <td>{e.attendanceSummary.lateDays} total, {e.attendanceSummary.chargeableLateDays} chargeable — {e.attendanceSummary.lateDeduction.toLocaleString()}</td>
+                      <td>{e.attendanceSummary.perDayRate.toLocaleString()}</td>
+                      <td><strong>{e.attendanceSummary.totalDeduction.toLocaleString()}</strong></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
         <p style={{ textAlign: "right", marginTop: "0.8rem" }}>
           <strong>Total: {total.toLocaleString()}</strong>
         </p>
