@@ -1,9 +1,24 @@
 const express = require("express");
 const router = express.Router();
 const PayrollCycle = require("../models/PayrollCycle");
+const Employee = require("../models/Employee");
 const requireAuth = require("../middleware/auth");
 const { requireRole, scopeFilter, canAccessCompany, requireAnyRole } = require("../middleware/permissions");
 const { logAction } = require("../utils/auditLog");
+const { parseCheckInFile, parseLeaveFile, buildAttendanceSummary, calculateAttendanceDeduction } = require("../utils/attendanceParser");
+
+// AmanorX's standard weekly off, per company policy - Sunday. If this ever
+// differs by company, this is the one place to change (e.g. read it off
+// the Company doc instead of a constant).
+const WEEKLY_OFF_WEEKDAY = 0;
+
+function computeEntryAttendance({ month, employee, attendanceFile, leaveFile }) {
+  const { presentDates, lateDates } = parseCheckInFile(attendanceFile);
+  const leaveDates = leaveFile ? parseLeaveFile(leaveFile) : new Set();
+  const summary = buildAttendanceSummary({ month, presentDates, lateDates, leaveDates, weeklyOffWeekday: WEEKLY_OFF_WEEKDAY });
+  const deduction = calculateAttendanceDeduction(employee.grossSalary, summary);
+  return { summary, deduction };
+}
 
 router.use(requireAuth);
 router.use(requireAnyRole(["HR", "CEO", "Accountant", "Finance"]));
@@ -42,6 +57,39 @@ router.get("/:id", async (req, res) => {
   }
 });
 
+// POST /api/payroll/parse-attendance - HR only. Lets the create-cycle form
+// preview the computed deduction/proposed amount before the cycle is
+// actually submitted, so HR can see the breakdown and adjust if needed.
+router.post("/parse-attendance", requireRole("HR"), async (req, res) => {
+  try {
+    const { employeeId, month, attendanceFile, leaveFile } = req.body;
+    if (!employeeId || !month || !attendanceFile) {
+      return res.status(400).json({ message: "employeeId, month, and attendanceFile are required" });
+    }
+
+    const employee = await Employee.findById(employeeId);
+    if (!employee || !canAccessCompany(req.user, employee.company)) {
+      return res.status(404).json({ message: "Employee not found" });
+    }
+
+    const { summary, deduction } = computeEntryAttendance({ month, employee, attendanceFile, leaveFile });
+    const suggestedProposedAmount = Math.max(0, Math.round(employee.netPayable - deduction.totalDeduction));
+
+    res.json({
+      summary,
+      deduction,
+      grossSalary: employee.grossSalary,
+      netPayable: employee.netPayable,
+      suggestedProposedAmount,
+    });
+  } catch (err) {
+    // parseCheckInFile/parseLeaveFile throw plain, person-readable Errors
+    // for bad files (missing Date column, unreadable dates, etc.) -
+    // surface those as 400s rather than a generic 500.
+    res.status(400).json({ message: err.message });
+  }
+});
+
 // POST /api/payroll - HR only, creates + submits a cycle for one company/month
 router.post("/", requireRole("HR"), async (req, res) => {
   try {
@@ -50,11 +98,35 @@ router.post("/", requireRole("HR"), async (req, res) => {
       return res.status(400).json({ message: "companyId, month, and at least one entry are required" });
     }
 
+    // Re-parse any attached attendance files server-side rather than
+    // trusting a client-submitted breakdown - the proposedAmount itself
+    // stays whatever HR submitted (they may have adjusted it after seeing
+    // the preview), but the stored attendanceSummary is always recomputed
+    // from the actual files so reviewers downstream see an honest breakdown.
+    const employeeIds = entries.map((e) => e.employee);
+    const employees = await Employee.find({ _id: { $in: employeeIds } });
+    const employeeById = new Map(employees.map((e) => [e._id.toString(), e]));
+
+    const enrichedEntries = entries.map((entry) => {
+      if (!entry.attendanceFile) return entry;
+
+      const employee = employeeById.get(String(entry.employee));
+      if (!employee) throw new Error("One of the selected employees could not be found");
+
+      const { summary, deduction } = computeEntryAttendance({
+        month, employee, attendanceFile: entry.attendanceFile, leaveFile: entry.leaveFile,
+      });
+      return {
+        ...entry,
+        attendanceSummary: { ...summary, ...deduction },
+      };
+    });
+
     const cycle = await PayrollCycle.create({
       company: companyId,
       month,
       createdBy: req.user._id,
-      entries,
+      entries: enrichedEntries,
       status: "Pending Finance Review",
     });
 
@@ -64,6 +136,12 @@ router.post("/", requireRole("HR"), async (req, res) => {
     res.status(201).json(cycle);
   } catch (err) {
     if (err.code === 11000) return res.status(409).json({ message: "A payroll cycle for this company and month already exists" });
+    // Bad attendance/leave file (unparseable / wrong columns) surfaces as a
+    // 400 so HR fixes the file, instead of silently submitting a cycle
+    // with no deduction applied.
+    if (err.message && (err.message.includes("Could not read") || err.message.includes("must have") || err.message.includes("unreadable") || err.message.includes("no data rows"))) {
+      return res.status(400).json({ message: err.message });
+    }
     res.status(500).json({ message: "Something went wrong", error: err.message });
   }
 });
