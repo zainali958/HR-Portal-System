@@ -1,16 +1,25 @@
 const mongoose = require("mongoose");
 
 // One cycle = one company's payroll for one month. Sequential approval
-// chain per Shafaat: HR compiles -> Finance checks affordability -> 
-// Accountant approves -> CEO signs off. Finance/Accountant can escalate
-// a stuck cycle to HR; if still unresolved, HR (or the cycle itself) can
-// escalate further to CEO.
+// chain per Shafaat: HR compiles -> Finance checks affordability ->
+// Accountant approves -> CEO signs off -> Accountant marks it Paid.
+//
+// If Finance can't afford the full amount, they propose a reduced amount
+// per entry instead of declining outright - that skips the Accountant's
+// mid-chain review (going straight to CEO, since a reduced payroll needs
+// the CEO's judgment call, not routine bookkeeping) and CEO can either
+// accept Finance's numbers or substitute their own. Either way, once CEO
+// signs off, it's the SAME next step as the normal path: Accountant marks
+// it Paid, at which point any shortfall (original ask minus what actually
+// got approved) is calculated and rolled onto the employee as a balance
+// owed, which shows up automatically on their next payroll entry.
 const STATUS_OPTIONS = [
   "Draft",
   "Pending Finance Review",
   "Pending Accountant Review",
   "Pending CEO Review",
   "Approved",
+  "Paid",
   "Declined",
   "Needs HR Attention",
 ];
@@ -67,9 +76,35 @@ const entrySchema = new mongoose.Schema(
     // Google Sheet via Employee.attendanceUsername.
     attendanceSource: { type: String, enum: ["file", "attendance-system", null], default: null },
     tasksFile: { type: fileSchema, default: null },
+    // What HR is asking to pay this cycle - already includes any prior
+    // carriedForwardAmount below, since HR sees that balance when building
+    // the cycle and it's meant to be folded into this month's ask.
     proposedAmount: { type: Number, min: 0, required: true },
+    // Informational: how much of proposedAmount above is old unpaid
+    // balance from a previous cycle, vs this month's normal pay. Doesn't
+    // drive any calculation by itself - just lets every reviewer see how
+    // much of the ask is "new" vs "catching up".
+    carriedForwardAmount: { type: Number, default: 0 },
     attendanceSummary: { type: attendanceSummarySchema, default: null },
     note: { type: String, trim: true, default: "" },
+
+    // Set once Finance decides. Equal to proposedAmount if Finance
+    // approved as requested; a lower number if Finance proposed a
+    // reduction (which routes the cycle straight to CEO instead of
+    // Accountant next - see routes/payroll.js).
+    financeApprovedAmount: { type: Number, default: null },
+    financeNote: { type: String, trim: true, default: "" },
+
+    // Set once CEO decides. Either matches financeApprovedAmount (CEO
+    // accepted Finance's number) or is CEO's own different figure.
+    ceoApprovedAmount: { type: Number, default: null },
+    ceoNote: { type: String, trim: true, default: "" },
+
+    // Set once Accountant marks the cycle Paid - the actual final amount
+    // disbursed, and the gap (if any) between that and proposedAmount,
+    // which becomes this employee's carry-forward balance for next time.
+    paidAmount: { type: Number, default: null },
+    shortfall: { type: Number, default: 0 },
   },
   { _id: false }
 );
@@ -103,6 +138,10 @@ const payrollCycleSchema = new mongoose.Schema(
 
     escalatedToCEO: { type: Boolean, default: false },
     escalatedToCEOAt: { type: Date, default: null },
+
+    // Set once Accountant marks the cycle Paid (final step of both paths).
+    paidAt: { type: Date, default: null },
+    paidBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
 
     // Which stage a cycle returns to once HR resolves an escalation -
     // otherwise HR would have no way to hand it back to the right place.
