@@ -59,7 +59,13 @@ const entrySchema = new mongoose.Schema(
     // Separate export from AttendanceSystem listing approved/informed
     // leave requests - the check-in log alone can't tell an approved leave
     // apart from an unexplained absence, since both are just "no row".
+    // Only used when attendanceSummary was built from an uploaded file
+    // rather than fetched live from the Sheet.
     leaveFile: { type: fileSchema, default: null },
+    // Where attendanceSummary (below) came from, if it's set at all - a
+    // manually uploaded file, or a live fetch from AttendanceSystem's
+    // Google Sheet via Employee.attendanceUsername.
+    attendanceSource: { type: String, enum: ["file", "attendance-system", null], default: null },
     tasksFile: { type: fileSchema, default: null },
     proposedAmount: { type: Number, min: 0, required: true },
     attendanceSummary: { type: attendanceSummarySchema, default: null },
