@@ -6,6 +6,7 @@ const STATUS_CLASSES = {
   "Pending Finance Review": "badge badge-pending",
   "Pending Accountant Review": "badge badge-pending",
   Approved: "badge badge-approved",
+  Paid: "badge badge-approved",
   Declined: "badge badge-declined",
   "Changes Requested": "badge badge-changes",
   "Needs HR Attention": "badge badge-declined",
