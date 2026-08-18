@@ -6,6 +6,7 @@ const requireAuth = require("../middleware/auth");
 const { requireRole, scopeFilter, canAccessCompany, requireAnyRole } = require("../middleware/permissions");
 const { logAction } = require("../utils/auditLog");
 const { parseCheckInFile, parseLeaveFile, buildAttendanceSummary, calculateAttendanceDeduction } = require("../utils/attendanceParser");
+const { fetchAttendanceFromSheet } = require("../utils/attendanceSheetsClient");
 
 // AmanorX's standard weekly off, per company policy - Sunday. If this ever
 // differs by company, this is the one place to change (e.g. read it off
@@ -15,6 +16,19 @@ const WEEKLY_OFF_WEEKDAY = 0;
 function computeEntryAttendance({ month, employee, attendanceFile, leaveFile }) {
   const { presentDates, lateDates } = parseCheckInFile(attendanceFile);
   const leaveDates = leaveFile ? parseLeaveFile(leaveFile) : new Set();
+  const summary = buildAttendanceSummary({ month, presentDates, lateDates, leaveDates, weeklyOffWeekday: WEEKLY_OFF_WEEKDAY });
+  const deduction = calculateAttendanceDeduction(employee.grossSalary, summary);
+  return { summary, deduction };
+}
+
+// Same as computeEntryAttendance above, but sources presence/lateness/leave
+// data directly from AttendanceSystem's Google Sheet instead of an
+// uploaded file - used when the employee has an attendanceUsername on file.
+async function computeEntryAttendanceFromSheet({ month, employee }) {
+  if (!employee.attendanceUsername) {
+    throw new Error(`${employee.employeeName} doesn't have an AttendanceSystem username set - add one on their Employee page, or upload attendance files manually instead`);
+  }
+  const { presentDates, lateDates, leaveDates } = await fetchAttendanceFromSheet(employee.attendanceUsername, month);
   const summary = buildAttendanceSummary({ month, presentDates, lateDates, leaveDates, weeklyOffWeekday: WEEKLY_OFF_WEEKDAY });
   const deduction = calculateAttendanceDeduction(employee.grossSalary, summary);
   return { summary, deduction };
@@ -57,6 +71,38 @@ router.get("/:id", async (req, res) => {
   }
 });
 
+// POST /api/payroll/fetch-attendance - HR only. Pulls attendance straight
+// from AttendanceSystem's Google Sheet for one employee/month, so HR
+// doesn't have to export/upload anything for employees who have an
+// AttendanceSystem username on file.
+router.post("/fetch-attendance", requireRole("HR"), async (req, res) => {
+  try {
+    const { employeeId, month } = req.body;
+    if (!employeeId || !month) {
+      return res.status(400).json({ message: "employeeId and month are required" });
+    }
+
+    const employee = await Employee.findById(employeeId);
+    if (!employee || !canAccessCompany(req.user, employee.company)) {
+      return res.status(404).json({ message: "Employee not found" });
+    }
+
+    const { summary, deduction } = await computeEntryAttendanceFromSheet({ month, employee });
+    const suggestedProposedAmount = Math.max(0, Math.round(employee.netPayable - deduction.totalDeduction));
+
+    res.json({
+      summary,
+      deduction,
+      grossSalary: employee.grossSalary,
+      netPayable: employee.netPayable,
+      suggestedProposedAmount,
+      source: "attendance-system",
+    });
+  } catch (err) {
+    res.status(400).json({ message: err.message });
+  }
+});
+
 // POST /api/payroll/parse-attendance - HR only. Lets the create-cycle form
 // preview the computed deduction/proposed amount before the cycle is
 // actually submitted, so HR can see the breakdown and adjust if needed.
@@ -81,6 +127,7 @@ router.post("/parse-attendance", requireRole("HR"), async (req, res) => {
       grossSalary: employee.grossSalary,
       netPayable: employee.netPayable,
       suggestedProposedAmount,
+      source: "file",
     });
   } catch (err) {
     // parseCheckInFile/parseLeaveFile throw plain, person-readable Errors
@@ -107,20 +154,25 @@ router.post("/", requireRole("HR"), async (req, res) => {
     const employees = await Employee.find({ _id: { $in: employeeIds } });
     const employeeById = new Map(employees.map((e) => [e._id.toString(), e]));
 
-    const enrichedEntries = entries.map((entry) => {
-      if (!entry.attendanceFile) return entry;
-
+    const enrichedEntries = await Promise.all(entries.map(async (entry) => {
       const employee = employeeById.get(String(entry.employee));
-      if (!employee) throw new Error("One of the selected employees could not be found");
 
-      const { summary, deduction } = computeEntryAttendance({
-        month, employee, attendanceFile: entry.attendanceFile, leaveFile: entry.leaveFile,
-      });
-      return {
-        ...entry,
-        attendanceSummary: { ...summary, ...deduction },
-      };
-    });
+      if (entry.attendanceFile) {
+        if (!employee) throw new Error("One of the selected employees could not be found");
+        const { summary, deduction } = computeEntryAttendance({
+          month, employee, attendanceFile: entry.attendanceFile, leaveFile: entry.leaveFile,
+        });
+        return { ...entry, attendanceSummary: { ...summary, ...deduction }, attendanceSource: "file" };
+      }
+
+      if (entry.useAttendanceSystem) {
+        if (!employee) throw new Error("One of the selected employees could not be found");
+        const { summary, deduction } = await computeEntryAttendanceFromSheet({ month, employee });
+        return { ...entry, attendanceSummary: { ...summary, ...deduction }, attendanceSource: "attendance-system" };
+      }
+
+      return entry;
+    }));
 
     const cycle = await PayrollCycle.create({
       company: companyId,
@@ -139,7 +191,7 @@ router.post("/", requireRole("HR"), async (req, res) => {
     // Bad attendance/leave file (unparseable / wrong columns) surfaces as a
     // 400 so HR fixes the file, instead of silently submitting a cycle
     // with no deduction applied.
-    if (err.message && (err.message.includes("Could not read") || err.message.includes("must have") || err.message.includes("unreadable") || err.message.includes("no data rows"))) {
+    if (err.message && (err.message.includes("Could not read") || err.message.includes("must have") || err.message.includes("unreadable") || err.message.includes("no data rows") || err.message.includes("AttendanceSystem") || err.message.includes("Google Sheet") || err.message.includes("credentials"))) {
       return res.status(400).json({ message: err.message });
     }
     res.status(500).json({ message: "Something went wrong", error: err.message });
