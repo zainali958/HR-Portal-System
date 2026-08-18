@@ -40,10 +40,11 @@ router.use(requireAnyRole(["HR", "CEO", "Accountant", "Finance"]));
 const PAYROLL_POPULATE = [
   { path: "company" },
   { path: "createdBy", select: "fullName email" },
-  { path: "entries.employee", select: "employeeName designation" },
+  { path: "entries.employee", select: "employeeName designation pendingSalaryCarryForward" },
   { path: "financeDecision.by", select: "fullName email" },
   { path: "accountantDecision.by", select: "fullName email" },
   { path: "ceoDecision.by", select: "fullName email" },
+  { path: "paidBy", select: "fullName email" },
 ];
 
 // GET /api/payroll
@@ -88,13 +89,15 @@ router.post("/fetch-attendance", requireRole("HR"), async (req, res) => {
     }
 
     const { summary, deduction } = await computeEntryAttendanceFromSheet({ month, employee });
-    const suggestedProposedAmount = Math.max(0, Math.round(employee.netPayable - deduction.totalDeduction));
+    const carriedForwardAmount = employee.pendingSalaryCarryForward || 0;
+    const suggestedProposedAmount = Math.max(0, Math.round(employee.netPayable - deduction.totalDeduction)) + carriedForwardAmount;
 
     res.json({
       summary,
       deduction,
       grossSalary: employee.grossSalary,
       netPayable: employee.netPayable,
+      carriedForwardAmount,
       suggestedProposedAmount,
       source: "attendance-system",
     });
@@ -119,13 +122,15 @@ router.post("/parse-attendance", requireRole("HR"), async (req, res) => {
     }
 
     const { summary, deduction } = computeEntryAttendance({ month, employee, attendanceFile, leaveFile });
-    const suggestedProposedAmount = Math.max(0, Math.round(employee.netPayable - deduction.totalDeduction));
+    const carriedForwardAmount = employee.pendingSalaryCarryForward || 0;
+    const suggestedProposedAmount = Math.max(0, Math.round(employee.netPayable - deduction.totalDeduction)) + carriedForwardAmount;
 
     res.json({
       summary,
       deduction,
       grossSalary: employee.grossSalary,
       netPayable: employee.netPayable,
+      carriedForwardAmount,
       suggestedProposedAmount,
       source: "file",
     });
@@ -156,22 +161,26 @@ router.post("/", requireRole("HR"), async (req, res) => {
 
     const enrichedEntries = await Promise.all(entries.map(async (entry) => {
       const employee = employeeById.get(String(entry.employee));
+      // Show the running balance from previous underpaid cycles on every
+      // entry regardless of how attendance was sourced - this is purely
+      // informational for reviewers, not something that gets recalculated.
+      const carriedForwardAmount = employee?.pendingSalaryCarryForward || 0;
 
       if (entry.attendanceFile) {
         if (!employee) throw new Error("One of the selected employees could not be found");
         const { summary, deduction } = computeEntryAttendance({
           month, employee, attendanceFile: entry.attendanceFile, leaveFile: entry.leaveFile,
         });
-        return { ...entry, attendanceSummary: { ...summary, ...deduction }, attendanceSource: "file" };
+        return { ...entry, attendanceSummary: { ...summary, ...deduction }, attendanceSource: "file", carriedForwardAmount };
       }
 
       if (entry.useAttendanceSystem) {
         if (!employee) throw new Error("One of the selected employees could not be found");
         const { summary, deduction } = await computeEntryAttendanceFromSheet({ month, employee });
-        return { ...entry, attendanceSummary: { ...summary, ...deduction }, attendanceSource: "attendance-system" };
+        return { ...entry, attendanceSummary: { ...summary, ...deduction }, attendanceSource: "attendance-system", carriedForwardAmount };
       }
 
-      return entry;
+      return { ...entry, carriedForwardAmount };
     }));
 
     const cycle = await PayrollCycle.create({
@@ -198,7 +207,8 @@ router.post("/", requireRole("HR"), async (req, res) => {
   }
 });
 
-// Shared stage-decision logic, same atomic pattern as Offers.
+// Shared stage-decision logic for stages that don't touch amounts
+// (Accountant's mid-chain review - same atomic pattern as Offers).
 async function makeStageDecision(req, res, { requiredStatus, approvedStatus, decisionField }) {
   const { decision, reason } = req.body;
   const validDecisions = ["Approved", "Declined"];
@@ -229,20 +239,96 @@ const update = {
   res.json(cycle);
 }
 
-// POST /api/payroll/:id/finance-decision - Finance only
+// Validates a revisedAmounts map ({ [employeeId]: newAmount }) against a
+// cycle's current entries: every key must match a real entry, and nobody
+// can propose paying MORE than what was originally asked - this mechanism
+// is for affordability reductions only, not raises.
+function applyRevisions(entries, revisedAmounts, sourceField, baselineField) {
+  const revisedIds = new Set(Object.keys(revisedAmounts || {}));
+  const validIds = new Set(entries.map((e) => String(e.employee)));
+  for (const id of revisedIds) {
+    if (!validIds.has(id)) throw new Error("One of the revised amounts doesn't match an employee in this cycle");
+  }
+
+  let anyChanged = false;
+  const updated = entries.map((entry) => {
+    const employeeId = String(entry.employee);
+    const baseline = entry[baselineField] ?? entry.proposedAmount;
+    const revised = revisedAmounts?.[employeeId];
+    const amount = revised !== undefined ? Number(revised) : baseline;
+
+    if (revised !== undefined) {
+      if (!Number.isFinite(amount) || amount < 0) {
+        throw new Error(`Invalid revised amount for one of the entries`);
+      }
+      if (amount > entry.proposedAmount) {
+        throw new Error(`A revised amount can't be more than what was originally proposed (${entry.proposedAmount})`);
+      }
+      if (amount !== entry.proposedAmount) anyChanged = true;
+    }
+
+    return { ...entry.toObject(), [sourceField]: amount };
+  });
+
+  return { updated, anyChanged };
+}
+
+// POST /api/payroll/:id/finance-decision - Finance only. Approves the
+// cycle as-is, OR approves WITH a reduced amount for one or more entries
+// (revisedAmounts: { [employeeId]: newAmount }) if the full ask can't be
+// afforded, OR declines the whole cycle outright.
 router.post("/:id/finance-decision", requireRole("Finance"), async (req, res) => {
   try {
-    await makeStageDecision(req, res, {
-      requiredStatus: "Pending Finance Review",
-      approvedStatus: "Pending Accountant Review",
-      decisionField: "financeDecision",
+    const { decision, reason, revisedAmounts } = req.body;
+    const validDecisions = ["Approved", "Declined"];
+    if (!validDecisions.includes(decision)) {
+      return res.status(400).json({ message: `decision must be one of: ${validDecisions.join(", ")}` });
+    }
+    const hasRevisions = revisedAmounts && Object.keys(revisedAmounts).length > 0;
+    if ((decision === "Declined" || hasRevisions) && !reason) {
+      return res.status(400).json({ message: "A reason is required to decline or to propose a reduced amount" });
+    }
+
+    const cycle = await PayrollCycle.findOne({ _id: req.params.id, status: "Pending Finance Review" });
+    if (!cycle) {
+      return res.status(409).json({ message: "This cycle's status has already changed - refresh to see the current status" });
+    }
+
+    let nextStatus = "Declined";
+    if (decision === "Approved") {
+      let updated, anyChanged;
+      try {
+        ({ updated, anyChanged } = applyRevisions(cycle.entries, revisedAmounts, "financeApprovedAmount", "proposedAmount"));
+      } catch (validationErr) {
+        return res.status(400).json({ message: validationErr.message });
+      }
+      cycle.entries = updated;
+      // A clean approval (no changes) follows the normal Finance -> Accountant
+      // -> CEO order. A reduction skips straight to CEO, since a change to
+      // what people get paid needs the CEO's judgment call before Accountant
+      // ever sees it again.
+      nextStatus = anyChanged ? "Pending CEO Review" : "Pending Accountant Review";
+    }
+
+    cycle.status = nextStatus;
+    cycle.financeDecision = { by: req.user._id, at: new Date(), reason: reason || "" };
+    await cycle.save();
+    await cycle.populate(PAYROLL_POPULATE);
+
+    await logAction({
+      entityType: "PayrollCycle", entityId: cycle._id,
+      action: decision === "Approved" ? (nextStatus === "Pending CEO Review" ? "finance_approved_with_reduction" : "approved_finance") : "declined_finance",
+      performedBy: req.user._id, details: { reason: reason || null, revisedAmounts: revisedAmounts || null },
     });
+    res.json(cycle);
   } catch (err) {
     res.status(500).json({ message: "Something went wrong", error: err.message });
   }
 });
 
-// POST /api/payroll/:id/accountant-decision - Accountant only
+// POST /api/payroll/:id/accountant-decision - Accountant only. Mid-chain
+// review, only reached via the normal (unreduced) path - doesn't touch
+// amounts, same as before.
 router.post("/:id/accountant-decision", requireRole("Accountant"), async (req, res) => {
   try {
     await makeStageDecision(req, res, {
@@ -255,14 +341,91 @@ router.post("/:id/accountant-decision", requireRole("Accountant"), async (req, r
   }
 });
 
-// POST /api/payroll/:id/ceo-decision - CEO only, final sign-off
+// POST /api/payroll/:id/ceo-decision - CEO only, final review. Reached
+// either after Accountant's mid-chain approval (normal path) or directly
+// after Finance proposes a reduction. CEO can accept whatever amount is
+// currently on each entry (Finance's number, or the original if nothing
+// was reduced), or substitute their own revisedAmounts, or decline.
 router.post("/:id/ceo-decision", requireRole("CEO"), async (req, res) => {
   try {
-    await makeStageDecision(req, res, {
-      requiredStatus: "Pending CEO Review",
-      approvedStatus: "Approved",
-      decisionField: "ceoDecision",
+    const { decision, reason, revisedAmounts } = req.body;
+    const validDecisions = ["Approved", "Declined"];
+    if (!validDecisions.includes(decision)) {
+      return res.status(400).json({ message: `decision must be one of: ${validDecisions.join(", ")}` });
+    }
+    const hasRevisions = revisedAmounts && Object.keys(revisedAmounts).length > 0;
+    if ((decision === "Declined" || hasRevisions) && !reason) {
+      return res.status(400).json({ message: "A reason is required to decline or to propose a different amount" });
+    }
+
+    const cycle = await PayrollCycle.findOne({ _id: req.params.id, status: "Pending CEO Review" });
+    if (!cycle) {
+      return res.status(409).json({ message: "This cycle's status has already changed - refresh to see the current status" });
+    }
+
+    if (decision === "Approved") {
+      // Baseline is whatever Finance already approved (or the original ask,
+      // for cycles that reached CEO via the normal unreduced path) - CEO's
+      // revisedAmounts, where given, override that baseline per entry.
+      let updated;
+      try {
+        ({ updated } = applyRevisions(cycle.entries, revisedAmounts, "ceoApprovedAmount", "financeApprovedAmount"));
+      } catch (validationErr) {
+        return res.status(400).json({ message: validationErr.message });
+      }
+      cycle.entries = updated;
+      cycle.status = "Approved";
+    } else {
+      cycle.status = "Declined";
+    }
+    cycle.ceoDecision = { by: req.user._id, at: new Date(), reason: reason || "" };
+    await cycle.save();
+    await cycle.populate(PAYROLL_POPULATE);
+
+    await logAction({
+      entityType: "PayrollCycle", entityId: cycle._id,
+      action: decision === "Approved" ? (hasRevisions ? "ceo_approved_with_revision" : "approved_ceo") : "declined_ceo",
+      performedBy: req.user._id, details: { reason: reason || null, revisedAmounts: revisedAmounts || null },
     });
+    res.json(cycle);
+  } catch (err) {
+    res.status(500).json({ message: "Something went wrong", error: err.message });
+  }
+});
+
+// POST /api/payroll/:id/mark-paid - Accountant only, final step of both
+// paths. Records the actual disbursed amount per entry, computes any
+// shortfall against what was originally proposed, and rolls that shortfall
+// onto the employee as a carry-forward balance for their next cycle.
+router.post("/:id/mark-paid", requireRole("Accountant"), async (req, res) => {
+  try {
+    const cycle = await PayrollCycle.findOne({ _id: req.params.id, status: "Approved" });
+    if (!cycle) {
+      return res.status(409).json({ message: "This cycle isn't ready to be marked paid - refresh to see the current status" });
+    }
+
+    const updatedEntries = [];
+    for (const entry of cycle.entries) {
+      const finalAmount = entry.ceoApprovedAmount ?? entry.financeApprovedAmount ?? entry.proposedAmount;
+      const shortfall = Math.max(0, entry.proposedAmount - finalAmount);
+
+      // The shortfall REPLACES (not adds to) the employee's running
+      // balance - proposedAmount already included whatever was owed going
+      // into this cycle, so this recomputation is the fresh, correct total.
+      await Employee.findByIdAndUpdate(entry.employee, { pendingSalaryCarryForward: shortfall });
+
+      updatedEntries.push({ ...entry.toObject(), paidAmount: finalAmount, shortfall });
+    }
+
+    cycle.entries = updatedEntries;
+    cycle.status = "Paid";
+    cycle.paidAt = new Date();
+    cycle.paidBy = req.user._id;
+    await cycle.save();
+    await cycle.populate(PAYROLL_POPULATE);
+
+    await logAction({ entityType: "PayrollCycle", entityId: cycle._id, action: "marked_paid", performedBy: req.user._id });
+    res.json(cycle);
   } catch (err) {
     res.status(500).json({ message: "Something went wrong", error: err.message });
   }
