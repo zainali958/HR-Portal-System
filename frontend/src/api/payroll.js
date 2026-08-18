@@ -22,6 +22,14 @@ export async function previewAttendance(employeeId, month, attendanceFile, leave
   return data;
 }
 
+// Pulls attendance straight from AttendanceSystem's Google Sheet instead
+// of requiring a manual file upload - only works once the employee has an
+// AttendanceSystem username saved on their record.
+export async function fetchAttendanceFromSystem(employeeId, month) {
+  const { data } = await client.post("/payroll/fetch-attendance", { employeeId, month });
+  return data;
+}
+
 export async function financeDecidePayroll(id, decision, reason) {
   const { data } = await client.post(`/payroll/${id}/finance-decision`, { decision, reason });
   return data;
