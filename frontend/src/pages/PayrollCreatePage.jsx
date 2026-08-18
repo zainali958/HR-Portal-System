@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { getCompanies } from "../api/companies";
 import { getEmployees } from "../api/employees";
-import { createPayrollCycle, previewAttendance } from "../api/payroll";
+import { createPayrollCycle, previewAttendance, fetchAttendanceFromSystem } from "../api/payroll";
 
 export default function PayrollCreatePage() {
   const navigate = useNavigate();
@@ -87,6 +87,9 @@ export default function PayrollCreatePage() {
 
       setEntries((prev) => {
         const updatedEntry = { ...prev[empId], [field]: fileObj };
+        // Manually picking a file overrides any previous auto-fetch from
+        // AttendanceSystem for this employee.
+        if (field === "attendanceFile") updatedEntry.useAttendanceSystem = false;
 
         // The check-in log drives the automatic deduction; the leave file
         // is optional context for it. Re-run the preview whenever either
@@ -114,6 +117,36 @@ export default function PayrollCreatePage() {
     };
     reader.onerror = () => setSubmitError(`Failed to read ${file.name}`);
     reader.readAsDataURL(file);
+  }
+
+  function handleAutoFetch(empId) {
+    if (!month) {
+      setSubmitError("Pick a month above first");
+      return;
+    }
+    updateEntry(empId, "attendanceError", "");
+    updateEntry(empId, "previewLoading", true);
+    fetchAttendanceFromSystem(empId, month)
+      .then((result) => {
+        setEntries((prev) => ({
+          ...prev,
+          [empId]: {
+            ...prev[empId],
+            attendancePreview: result,
+            proposedAmount: String(result.suggestedProposedAmount),
+            useAttendanceSystem: true,
+            attendanceFile: null, // fetched data replaces any file that was selected
+            previewLoading: false,
+            attendanceError: "",
+          },
+        }));
+      })
+      .catch((err) => {
+        setEntries((prev) => ({
+          ...prev,
+          [empId]: { ...prev[empId], attendancePreview: null, previewLoading: false, attendanceError: err.response?.data?.message || "Failed to fetch from AttendanceSystem" },
+        }));
+      });
   }
 
   function downloadTemplate(kind) {
@@ -160,6 +193,7 @@ export default function PayrollCreatePage() {
           proposedAmount: Number(v.proposedAmount),
           attendanceFile: v.attendanceFile,
           leaveFile: v.leaveFile,
+          useAttendanceSystem: !!v.useAttendanceSystem,
           tasksFile: v.tasksFile,
           note: v.note,
         })),
@@ -244,6 +278,22 @@ export default function PayrollCreatePage() {
                       {!month && (
                         <p className="msg error" style={{ marginTop: "0.4rem" }}>Pick a month above first, so attendance can be matched to the right calendar days.</p>
                       )}
+
+                      {emp.attendanceUsername ? (
+                        <div className="decision-box" style={{ marginTop: "0.4rem" }}>
+                          <p className="muted" style={{ margin: "0 0 0.5rem" }}>
+                            Linked to AttendanceSystem as <strong>{emp.attendanceUsername}</strong> — pull this month's attendance directly instead of uploading files.
+                          </p>
+                          <button type="button" className="btn-primary" disabled={!month} onClick={() => handleAutoFetch(emp._id)}>
+                            Fetch from AttendanceSystem
+                          </button>
+                        </div>
+                      ) : (
+                        <p className="muted" style={{ marginTop: "0.4rem" }}>
+                          No AttendanceSystem username on file for this employee — add one on their Employee page to enable auto-fetch, or upload the files below manually.
+                        </p>
+                      )}
+
                       <label>
                         Check-In Log <span className="optional">(.csv/.xlsx export from AttendanceSystem — required for auto-calculation)</span>
                         <input
@@ -276,6 +326,9 @@ export default function PayrollCreatePage() {
                       {entry.attendanceError && <p className="msg error">{entry.attendanceError}</p>}
                       {entry.attendancePreview && (
                         <div className="card" style={{ background: "var(--bg-subtle, #f7f7f7)", padding: "0.8rem", marginBottom: "0.8rem" }}>
+                          <p className="muted" style={{ marginTop: 0 }}>
+                            Source: {entry.attendancePreview.source === "attendance-system" ? "Fetched live from AttendanceSystem" : "Uploaded file"}
+                          </p>
                           <dl className="review-list" style={{ margin: 0 }}>
                             <dt>Working Days</dt><dd>{entry.attendancePreview.summary.workingDays} of {entry.attendancePreview.summary.totalDaysInMonth} ({entry.attendancePreview.summary.weeklyOffDays} Sunday off)</dd>
                             <dt>Present</dt><dd>{entry.attendancePreview.summary.presentDays}</dd>
