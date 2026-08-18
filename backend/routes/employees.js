@@ -62,7 +62,7 @@ router.patch("/:id", async (req, res) => {
       return res.status(404).json({ message: "Employee not found" });
     }
 
-    const editableFields = ["employmentStatus", "designation", "grossSalary", "allowances", "deductions","basicSalary", "houseRentAllowance", "medicalAllowance", "conveyanceAllowance", "otherAllowance", "incomeTaxDeduction", "eobiDeduction", "otherDeduction", "reportsTo", "contactNumber", "jdOnFile"];
+    const editableFields = ["employmentStatus", "designation", "grossSalary", "allowances", "deductions","basicSalary", "houseRentAllowance", "medicalAllowance", "conveyanceAllowance", "otherAllowance", "incomeTaxDeduction", "eobiDeduction", "otherDeduction", "reportsTo", "contactNumber", "jdOnFile", "attendanceUsername"];
     const changes = [];
     for (const field of editableFields) {
       if (req.body[field] !== undefined && JSON.stringify(req.body[field]) !== JSON.stringify(employee[field])) {
