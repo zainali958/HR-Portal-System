@@ -271,6 +271,11 @@ export default function PayrollCreatePage() {
                     />
                     <strong>{emp.employeeName}</strong> — {emp.designation}
                     {emp.netPayable ? <span className="muted"> (last net payable: {emp.netPayable})</span> : null}
+                    {emp.pendingSalaryCarryForward > 0 && (
+                      <span className="msg error" style={{ display: "inline", marginLeft: "0.5rem" }}>
+                        + {emp.pendingSalaryCarryForward.toLocaleString()} carried over from a previous cycle
+                      </span>
+                    )}
                   </label>
 
                   {included && (
@@ -340,6 +345,9 @@ export default function PayrollCreatePage() {
                             <dd>{entry.attendancePreview.summary.lateDays} total, {entry.attendancePreview.deduction.chargeableLateDays} chargeable — deducts {entry.attendancePreview.deduction.lateDeduction.toLocaleString()}</dd>
                             <dt>Per-Day Rate</dt><dd>{entry.attendancePreview.deduction.perDayRate.toLocaleString()}</dd>
                             <dt>Total Deduction</dt><dd>{entry.attendancePreview.deduction.totalDeduction.toLocaleString()}</dd>
+                            {entry.attendancePreview.carriedForwardAmount > 0 && (
+                              <><dt>Carried Over From Before</dt><dd>+ {entry.attendancePreview.carriedForwardAmount.toLocaleString()}</dd></>
+                            )}
                             <dt>Suggested Net Pay</dt><dd><strong>{entry.attendancePreview.suggestedProposedAmount.toLocaleString()}</strong></dd>
                           </dl>
                         </div>
