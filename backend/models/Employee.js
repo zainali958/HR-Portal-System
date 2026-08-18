@@ -21,6 +21,13 @@ const employeeSchema = new mongoose.Schema(
     // Blank until HR sets it - falls back to manual file upload until then.
     attendanceUsername: { type: String, trim: true, default: "" },
 
+    // System-managed running balance of underpaid salary from previous
+    // cycles (e.g. Finance/CEO approved less than the full proposed amount
+    // due to affordability). Added automatically into this employee's next
+    // payroll entry, then recalculated whenever a cycle involving them
+    // actually gets marked Paid - see routes/payroll.js markPaid.
+    pendingSalaryCarryForward: { type: Number, default: 0 },
+
     employeeName: { type: String, required: true, trim: true },
     fatherName: { type: String, required: true, trim: true },
     cnic: { type: String, required: true, trim: true },
