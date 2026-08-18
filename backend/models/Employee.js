@@ -15,6 +15,12 @@ const employeeSchema = new mongoose.Schema(
 
     employerOfRecord: { type: String, trim: true, default: "" },
 
+    // Links this record to their account in AttendanceSystem (the separate
+    // Google-Sheets-backed app) so payroll can auto-fetch their check-ins
+    // and approved leaves instead of HR needing to upload files by hand.
+    // Blank until HR sets it - falls back to manual file upload until then.
+    attendanceUsername: { type: String, trim: true, default: "" },
+
     employeeName: { type: String, required: true, trim: true },
     fatherName: { type: String, required: true, trim: true },
     cnic: { type: String, required: true, trim: true },
