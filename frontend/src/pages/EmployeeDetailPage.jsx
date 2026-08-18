@@ -8,11 +8,15 @@ export default function EmployeeDetailPage() {
   const [status, setStatus] = useState({ state: "loading", message: "" });
   const [actionError, setActionError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [attendanceUsername, setAttendanceUsername] = useState("");
+  const [savingUsername, setSavingUsername] = useState(false);
+  const [usernameSaved, setUsernameSaved] = useState(false);
 
   function load() {
     getEmployee(id)
       .then((data) => {
         setEmployee(data);
+        setAttendanceUsername(data.attendanceUsername || "");
         setStatus({ state: "success", message: "" });
       })
       .catch((err) => {
@@ -39,6 +43,24 @@ export default function EmployeeDetailPage() {
       setActionError(message);
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function saveAttendanceUsername() {
+    setActionError("");
+    setUsernameSaved(false);
+    setSavingUsername(true);
+    try {
+      const updated = await updateEmployee(id, { attendanceUsername: attendanceUsername.trim() });
+      setEmployee(updated);
+      setUsernameSaved(true);
+    } catch (err) {
+      const message = err.response && err.response.data && err.response.data.message
+        ? err.response.data.message
+        : "Failed to save AttendanceSystem username";
+      setActionError(message);
+    } finally {
+      setSavingUsername(false);
     }
   }
 
@@ -98,6 +120,34 @@ export default function EmployeeDetailPage() {
             </dl>
           </>
         )}
+
+        <h3>Payroll & Attendance</h3>
+        <dl className="review-list">
+          <dt>AttendanceSystem Username</dt>
+          <dd>
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                type="text"
+                value={attendanceUsername}
+                onChange={(e) => { setAttendanceUsername(e.target.value); setUsernameSaved(false); }}
+                placeholder="e.g. zain (their login on attendence.prepreneurship.com)"
+                style={{ minWidth: "220px" }}
+              />
+              <button
+                type="button"
+                className="btn-secondary"
+                disabled={savingUsername || attendanceUsername.trim() === (employee.attendanceUsername || "")}
+                onClick={saveAttendanceUsername}
+              >
+                {savingUsername ? "Saving..." : "Save"}
+              </button>
+              {usernameSaved && <span className="muted">Saved</span>}
+            </div>
+            <span className="muted" style={{ display: "block", marginTop: "0.3rem" }}>
+              Set this once and Payroll can auto-fetch this employee's attendance instead of needing a file upload each month.
+            </span>
+          </dd>
+        </dl>
 
         {employee.notes && (
           <>
