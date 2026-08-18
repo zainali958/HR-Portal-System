@@ -30,8 +30,8 @@ export async function fetchAttendanceFromSystem(employeeId, month) {
   return data;
 }
 
-export async function financeDecidePayroll(id, decision, reason) {
-  const { data } = await client.post(`/payroll/${id}/finance-decision`, { decision, reason });
+export async function financeDecidePayroll(id, decision, reason, revisedAmounts) {
+  const { data } = await client.post(`/payroll/${id}/finance-decision`, { decision, reason, revisedAmounts });
   return data;
 }
 
@@ -40,8 +40,15 @@ export async function accountantDecidePayroll(id, decision, reason) {
   return data;
 }
 
-export async function ceoDecidePayroll(id, decision, reason) {
-  const { data } = await client.post(`/payroll/${id}/ceo-decision`, { decision, reason });
+export async function ceoDecidePayroll(id, decision, reason, revisedAmounts) {
+  const { data } = await client.post(`/payroll/${id}/ceo-decision`, { decision, reason, revisedAmounts });
+  return data;
+}
+
+// Accountant's final step for both approval paths - records the cycle as
+// actually paid out and settles/carries forward any shortfall per entry.
+export async function markPayrollPaid(id) {
+  const { data } = await client.post(`/payroll/${id}/mark-paid`);
   return data;
 }
 
